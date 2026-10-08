@@ -4,8 +4,8 @@
 //| This is a reconstruction, NOT the original proprietary source.  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.70"
-#property description "ASLAN Vur-Kac M5 v2.70 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
+#property version "2.71"
+#property description "ASLAN Vur-Kac M5 v2.71 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -121,7 +121,17 @@ input int    NewsMinutesAfter         = 15;     // Haberden kaç dk sonra
 input bool   CountClosingCommission   = true;   // Net hesaplara kapanış komisyonunu da ekle (açılışla aynı varsayılır)
 input double MinMarginLevelPercent    = 1000.0; // Marj seviyesi bunun altındaysa yeni emir yok (0 = kapalı)
 input double MaxTotalLots             = 0.30;   // Açık + bekleyen toplam lot sınırı (0 = kapalı)
-input bool   LogExecutions            = true;   // Gerçekleşmeleri Common\Files\ASLAN_exec_<hesap>.csv dosyasına yaz
+input bool   LogExecutions            = true;   // Gerçekleşmeleri Common\Files\ASLAN_exec_<hesap>.csv dosyasına yaz (tester'da yazılmaz)
+
+input group "STOP LIMIT (v2.71)"
+// v2.70 testinde stop emirleri istenen fiyattan ortalama 10 point kötü doldu.
+// Stop Limit: fiyat stop seviyesine gelince stop fiyatında (veya daha iyisinde)
+// bir limit emri oluşur. MT5 kuralı: Buy Stop Limit'te limit < stop,
+// Sell Stop Limit'te limit > stop. Böylece kayma sıfırlanır; fiyat geri
+// gelmezse emir StopLimitWaitSeconds sonunda iptal edilir (işlem kaçırılır).
+input bool   UseStopLimit             = true;   // Buy/Sell Stop yerine Stop Limit kullan
+input double StopLimitOffsetPoints    = 1.0;    // Limit fiyatı stop fiyatından bu kadar iyi (point, >= 1)
+input int    StopLimitWaitSeconds     = 30;     // Tetiklenen limit emri bu süre içinde dolmazsa iptal
 
 //======================== INFO / MEMO ==============================
 // Chart recommendation: XAUUSD M5.
@@ -166,6 +176,10 @@ double   g_commVal[];
 double   g_slipSum      = 0.0;
 double   g_slipMax      = 0.0;
 int      g_slipCount    = 0;
+int      g_missedFills  = 0;   // v2.71: süresinde dolmadığı için iptal edilen stop limit
+bool     g_stopLimitRejected = false; // sunucu stop limit'i reddederse normal stop'a dön
+ulong    g_limTicket[];        // tetiklenmiş (limit'e dönmüş) emirler
+datetime g_limSeen[];          // ilk görüldüğü zaman
 
 //--- İşlem başı maliyet (fiyat birimi): ortalama spread + açılış/kapanış komisyonu.
 //    XAUUSD.n: 3 USD x 2 / 100 kontrat = 0.06 USD = 6 point
@@ -174,6 +188,64 @@ double TradingCostPrice()
    double contract=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_CONTRACT_SIZE);
    double comm=(contract>0.0 ? 2.0*CommissionPerLotPerSide/contract : 0.0);
    return g_avgSpread+comm;
+}
+
+//--- Bir bekleyen emir tipi, grid tarafına (BUY_STOP / SELL_STOP) ait mi?
+//    Stop Limit emirleri de aynı tarafın grid seviyesi sayılır.
+bool IsSideType(ENUM_ORDER_TYPE t,ENUM_ORDER_TYPE side)
+{
+   if(t==side) return true;
+   if(side==ORDER_TYPE_BUY_STOP  && t==ORDER_TYPE_BUY_STOP_LIMIT)  return true;
+   if(side==ORDER_TYPE_SELL_STOP && t==ORDER_TYPE_SELL_STOP_LIMIT) return true;
+   return false;
+}
+
+//--- Sembol Stop Limit destekliyor mu?
+bool StopLimitAvailable()
+{
+   if(!UseStopLimit || g_stopLimitRejected) return false;
+   int modes=(int)SymbolInfoInteger(_Symbol,SYMBOL_ORDER_MODE);
+   return (modes & SYMBOL_ORDER_STOP_LIMIT)!=0;
+}
+
+//--- Tetiklenen Stop Limit'ler limit emrine döner. EA kendisi limit emri koymadığı
+//    için bunlar tetiklenmiş ama henüz dolmamış girişlerdir. StopLimitWaitSeconds
+//    içinde dolmazlarsa (fiyat geri gelmedi) bayat giriş olmasın diye iptal edilir.
+void CancelUnfilledTriggeredLimits()
+{
+   ulong    keepT[];
+   datetime keepS[];
+   datetime now=TimeCurrent();
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong t=OrderGetTicket(i);
+      if(!IsOurOrder(t)) continue;
+      ENUM_ORDER_TYPE ot=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot!=ORDER_TYPE_BUY_LIMIT && ot!=ORDER_TYPE_SELL_LIMIT) continue;
+
+      datetime seen=now;
+      for(int k=0;k<ArraySize(g_limTicket);k++)
+         if(g_limTicket[k]==t){ seen=g_limSeen[k]; break; }
+
+      if(now-seen>=MathMax(0,StopLimitWaitSeconds))
+      {
+         trade.SetExpertMagicNumber(MagicNumber);
+         if(trade.OrderDelete(t))
+         {
+            g_missedFills++;
+            Print("ASLAN STOPLIMIT MISSED | ticket=",t," | ",IntegerToString(StopLimitWaitSeconds)," sn icinde dolmadi, iptal");
+            continue;
+         }
+      }
+      int n=ArraySize(keepT);
+      ArrayResize(keepT,n+1);
+      ArrayResize(keepS,n+1);
+      keepT[n]=t;
+      keepS[n]=seen;
+   }
+   ArrayResize(g_limTicket,ArraySize(keepT));
+   ArrayResize(g_limSeen,ArraySize(keepS));
+   for(int k=0;k<ArraySize(keepT);k++){ g_limTicket[k]=keepT[k]; g_limSeen[k]=keepS[k]; }
 }
 
 //--- Ayar point'ini fiyat birimine çeviren ölçekli point
@@ -493,7 +565,7 @@ void LogExecution(ulong deal)
    MqlTick t;
    double spread=SymbolInfoTick(_Symbol,t) ? (t.ask-t.bid)/PT() : 0.0;
 
-   if(!LogExecutions) return;
+   if(!LogExecutions || MQLInfoInteger(MQL_TESTER)) return;
    string name="ASLAN_exec_"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+".csv";
    int h=FileOpen(name,FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
    if(h==INVALID_HANDLE) return;
@@ -702,7 +774,7 @@ bool PendingNear(ENUM_ORDER_TYPE type,double price,double tolerancePoints=5.0)
    {
       ulong t=OrderGetTicket(i);
       if(!IsOurOrder(t)) continue;
-      if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE)!=type) continue;
+      if(!IsSideType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE),type)) continue;
       double p=OrderGetDouble(ORDER_PRICE_OPEN);
       if(MathAbs(p-price)<=tolerancePoints*PT()) return true;
    }
@@ -797,7 +869,27 @@ bool PlaceStop(ENUM_ORDER_TYPE type,double price,double lot,int level)
    string side=(type==ORDER_TYPE_BUY_STOP ? "BUY" : "SELL");
    string comment="ASLAN_VK_"+side+"_L"+IntegerToString(level);
    bool ok=false;
-   if(type==ORDER_TYPE_BUY_STOP)
+   if(StopLimitAvailable())
+   {
+      // Stop Limit: tetik = price; limit buy'da stop'un ALTINDA, sell'de ÜSTÜNDE (MT5 kuralı)
+      double off=MathMax(1.0,StopLimitOffsetPoints)*PT();
+      double limitPrice=NormalizePrice(type==ORDER_TYPE_BUY_STOP ? price-off : price+off);
+      ENUM_ORDER_TYPE slType=(type==ORDER_TYPE_BUY_STOP ? ORDER_TYPE_BUY_STOP_LIMIT : ORDER_TYPE_SELL_STOP_LIMIT);
+      ok=trade.OrderOpen(_Symbol,slType,lot,limitPrice,price,sl,0.0,ORDER_TIME_GTC,0,comment);
+      if(!ok && (trade.ResultRetcode()==TRADE_RETCODE_INVALID_PRICE ||
+                 trade.ResultRetcode()==TRADE_RETCODE_INVALID_ORDER ||
+                 trade.ResultRetcode()==TRADE_RETCODE_INVALID))
+      {
+         g_stopLimitRejected=true;
+         Print("ASLAN STOPLIMIT REJECTED | ",trade.ResultRetcode()," | ",trade.ResultRetcodeDescription(),
+               " | normal Stop emirlerine donuluyor");
+         if(type==ORDER_TYPE_BUY_STOP)
+            ok=trade.BuyStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
+         else
+            ok=trade.SellStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
+      }
+   }
+   else if(type==ORDER_TYPE_BUY_STOP)
       ok=trade.BuyStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
    else
       ok=trade.SellStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
@@ -817,7 +909,7 @@ int PendingCountByType(ENUM_ORDER_TYPE type)
    {
       ulong t=OrderGetTicket(i);
       if(!IsOurOrder(t)) continue;
-      if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE)==type) n++;
+      if(IsSideType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE),type)) n++;
    }
    return n;
 }
@@ -830,7 +922,7 @@ double ExtremePendingPrice(ENUM_ORDER_TYPE type)
    {
       ulong t=OrderGetTicket(i);
       if(!IsOurOrder(t)) continue;
-      if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE)!=type) continue;
+      if(!IsSideType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE),type)) continue;
       double p=OrderGetDouble(ORDER_PRICE_OPEN);
       if(!have){ extreme=p; have=true; }
       else if(type==ORDER_TYPE_BUY_STOP) extreme=MathMax(extreme,p);
@@ -862,7 +954,7 @@ void DeletePendingByType(ENUM_ORDER_TYPE type)
    {
       ulong ticket=OrderGetTicket(i);
       if(!IsOurOrder(ticket)) continue;
-      if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE)!=type) continue;
+      if(!IsSideType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE),type)) continue;
       trade.SetExpertMagicNumber(MagicNumber);
       if(!trade.OrderDelete(ticket))
          Print("ASLAN OPPOSITE PENDING DELETE FAILED | ticket=",ticket,
@@ -1436,12 +1528,14 @@ int OnInit()
    Print("ASLAN POINT SCALE | digits=",_Digits," | scale=",DoubleToString(g_scale,0),
          " | stopLevel=",SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL),
          " | freezeLevel=",SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL));
+   if(UseStopLimit && !StopLimitAvailable())
+      Print("ASLAN NOTE | Sembol Stop Limit desteklemiyor, normal Stop emirleri kullanilacak.");
    if(UseNewsFilter && MQLInfoInteger(MQL_TESTER))
       Print("ASLAN NOTE | Strategy Tester'da ekonomik takvim calismaz; haber filtresi bu testte etkisiz.");
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   Print("ASLAN v2.70 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
+   Print("ASLAN v2.71 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
    UpdateMemo();
    return INIT_SUCCEEDED;
 }
@@ -1495,7 +1589,7 @@ void UpdateMemo()
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double lot=AutoBalanceLot();
    string tf=(_Period==PERIOD_M5 ? "M5 OK" : "USE M5");
-   Comment("ASLAN VUR-KAC v2.70 LIVE\n",
+   Comment("ASLAN VUR-KAC v2.71 LIVE\n",
            "Recommended: XAUUSD M5 | ",tf,"\n",
            "Balance: ",DoubleToString(balance,2),
            " | Equity: ",DoubleToString(equity,2),"\n",
@@ -1510,13 +1604,15 @@ void UpdateMemo()
            " | Cost: ",DoubleToString(TradingCostPrice()/PT(),1),
            " | Grid: ",DoubleToString(LevelDistancePrice()/PT(),0)," | SL: ",DoubleToString(SLDistancePrice()/PT(),0)," point\n",
            "Slippage avg: ",DoubleToString(g_slipCount>0?g_slipSum/g_slipCount:0.0,1),
-           " | max: ",DoubleToString(g_slipMax,1)," point (",IntegerToString(g_slipCount)," fill)\n",
+           " | max: ",DoubleToString(g_slipMax,1)," point (",IntegerToString(g_slipCount)," fill)",
+           " | StopLimit: ",(StopLimitAvailable()?"ON":"OFF")," missed=",IntegerToString(g_missedFills),"\n",
            "Live block: ",(g_blocked?g_blockReason:"yok"));
 }
 
 void OnTick()
 {
    UpdateLiveStats();
+   CancelUnfilledTriggeredLimits();
    LoadNews();
    UpdateMemo();
    if(!RiskAndDaily()) return;
@@ -1549,7 +1645,12 @@ void OnTick()
 
 void OnDeinit(const int reason)
 {
+   Print("ASLAN EXEC SUMMARY | fills=",IntegerToString(g_slipCount),
+         " | avgSlip=",DoubleToString(g_slipCount>0?g_slipSum/g_slipCount:0.0,2)," point",
+         " | maxSlip=",DoubleToString(g_slipMax,1),
+         " | stopLimitMissed=",IntegerToString(g_missedFills),
+         " | avgSpread=",DoubleToString(g_avgSpread/PT(),1)," point");
    Comment("");
-   Print("ASLAN v2.70 DEINIT | reason=",reason);
+   Print("ASLAN v2.71 DEINIT | reason=",reason);
 }
 //+------------------------------------------------------------------+

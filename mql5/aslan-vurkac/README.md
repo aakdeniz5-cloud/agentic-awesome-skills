@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.70 LIVE
+# ASLAN Vur-Kaç M5 v2.71 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -46,6 +46,34 @@ Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış
 | MinMarginLevelPercent | 1000 | Marj seviyesi bunun altındaysa yeni emir konmaz. |
 | MaxTotalLots | 0.30 | Açık + bekleyen toplam lot sınırı. |
 | LogExecutions | true | Gerçekleşme günlüğü. |
+
+## v2.70 backtest sonucu ve v2.71 değişikliği
+
+2026.05–2026.10 döneminde, 10.000 $ başlangıç bakiyesiyle, gerçek tick verisiyle yapılan v2.70 testinin sonucu:
+- **−1.900 $** net, 7.059 işlem, profit factor 0,82.
+- Komisyon −635 $.
+- Fiyat hareketinden sonuç −1.265 $ (spread ve kayma dahil).
+- **Stop emirleri istenen fiyattan ortalama 10 point (medyan 5) kötü doldu.** 0,03 lotta bu yaklaşık 2.100 $ eder ve en büyük maliyet kalemi.
+
+v2.71 bu maliyeti hedefliyor:
+
+| Ayar | Varsayılan | Açıklama |
+|---|---|---|
+| UseStopLimit | true | Buy/Sell Stop yerine Buy/Sell **Stop Limit** kullanılır. Fiyat stop seviyesine gelince stop fiyatında veya daha iyisinde bir limit emri oluşur, yani **kayma sıfır** olur. Sunucu reddederse otomatik olarak normal Stop emirlerine dönülür. |
+| StopLimitOffsetPoints | 1 | Limit fiyatı stop fiyatından bu kadar iyi. MT5 kuralı: Buy Stop Limit'te limit stop'un altında olmalıdır. |
+| StopLimitWaitSeconds | 30 | Tetiklenen emir bu süre içinde dolmazsa iptal edilir. Bu, fiyatın geri gelmeden kaçtığı ve işlemin kaçırıldığı anlamına gelir. |
+
+Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kazandıran işlemleri tam o hareketler olabilir. Sonuç ancak test edilerek görülür. Test bittiğinde Journal'daki `ASLAN EXEC SUMMARY` satırı ortalama kaymayı ve kaçırılan emir sayısını gösterir.
+
+### Karşılaştırma testleri
+Hepsi aynı dönem (2026.05.01–2026.10.06), 10.000 $, gerçek tick verisi ve Random delay ile yapılmalı:
+
+| Test | Ayar | Ne gösterir |
+|---|---|---|
+| A | v2.71 varsayılan | Stop Limit + maliyet bazlı mesafeler |
+| B | v2.71, `GridSpreadMultiplier=0`, `SLSpreadMultiplier=0` | Stop Limit + orijinal 15/30 point mesafeler |
+| C | v2.71, `UseStopLimit=false` | v2.70 ile aynı. Kıyas için −1.900 $ |
+| D | Orijinal v2.63 | Değişikliklerin hiçbiri olmadan |
 
 ## Önerilen test sırası
 1. **Strategy Tester:** Gerçek tick verisiyle test edin. "Executie" (gecikme) ayarını **Random delay** yapın. Komisyon, sunucunun sembol ayarlarından otomatik uygulanır. Haber filtresi tester'da çalışmaz.
