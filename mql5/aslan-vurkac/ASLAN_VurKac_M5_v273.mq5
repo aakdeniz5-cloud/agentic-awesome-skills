@@ -4,8 +4,8 @@
 //| This is a reconstruction, NOT the original proprietary source.  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.72"
-#property description "ASLAN Vur-Kac M5 v2.72 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
+#property version "2.73"
+#property description "ASLAN Vur-Kac M5 v2.73 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -123,6 +123,22 @@ input double MinMarginLevelPercent    = 1000.0; // Marj seviyesi bunun altınday
 input double MaxTotalLots             = 0.30;   // Açık + bekleyen toplam lot sınırı (0 = kapalı)
 input bool   LogExecutions            = true;   // Gerçekleşmeleri Common\Files\ASLAN_exec_<hesap>.csv dosyasına yaz (tester'da yazılmaz)
 
+input group "ISLEM SAATI & KAR KORUMA (v2.73)"
+// v2.71 testinde işlemlerin %99'u sunucu saatiyle 01:00-06:00 (Asya/gece)
+// arasında açıldı ve zararın tamamı oradan geldi; günlük -30 $ limiti EA'yı
+// Londra/NY gelmeden kilitliyordu. Ayrıca 20 $+ kâra çıkan 43 günün 23'ü
+// zararla kapandı.
+input bool   UseTradingHours          = true;   // Sadece seçilen saatlerde emir koy (sunucu saati)
+input int    TradeStartHour           = 10;     // Başlangıç saati (EC Markets yaz GMT+3: 10 = Londra 07 GMT)
+input int    TradeEndHour             = 19;     // Bitiş saati (19 = Londra kapanışı 16 GMT)
+input bool   CloseOutsideHours        = true;   // Saat dışına çıkınca açık pozisyonları kapat
+input bool   UseDailyProfitLock       = true;   // Günlük kâr kilidi
+input double DailyLockStartMoney      = 20.0;   // Gün içi net kâr bu tutara ulaşınca kilit devreye girer
+input double DailyLockKeepPercent     = 50.0;   // Gün içi zirvenin bu %'si geri verilirse her şeyi kapat, gün biter
+input double BasketLockPercent        = 50.0;   // Basket trail: zirvenin en az bu %'sini koru (0 = sadece sabit geri verme)
+input double LegTakeProfitPoints      = 0.0;    // Her pozisyona TP (point, 0 = kapalı; maliyetin 2 katından az olamaz)
+input double LegBreakEvenPoints       = 0.0;    // Pozisyon bu kadar point kârda ise SL'yi net başa başa çek (0 = kapalı)
+
 input group "STOP LIMIT (v2.71)"
 // v2.70 testinde stop emirleri istenen fiyattan ortalama 10 point kötü doldu.
 // Stop Limit: fiyat stop seviyesine gelince stop fiyatında (veya daha iyisinde)
@@ -177,6 +193,7 @@ double   g_slipSum      = 0.0;
 double   g_slipMax      = 0.0;
 int      g_slipCount    = 0;
 int      g_missedFills  = 0;   // v2.71: süresinde dolmadığı için iptal edilen stop limit
+double   g_dayPeak      = 0.0;  // v2.73: gün içi net zirve
 int      g_slPlaced     = 0;   // v2.72: kabul edilen stop limit emri
 int      g_slRejected   = 0;   // v2.72: reddedilip o emir için normal stop'a dönülen
 ulong    g_limTicket[];        // tetiklenmiş (limit'e dönmüş) emirler
@@ -247,6 +264,18 @@ void CancelUnfilledTriggeredLimits()
    ArrayResize(g_limTicket,ArraySize(keepT));
    ArrayResize(g_limSeen,ArraySize(keepS));
    for(int k=0;k<ArraySize(keepT);k++){ g_limTicket[k]=keepT[k]; g_limSeen[k]=keepS[k]; }
+}
+
+//--- v2.73: işlem saatleri içinde miyiz? (sunucu saati, gece yarısını aşan pencere destekli)
+bool InTradingHours()
+{
+   if(!UseTradingHours) return true;
+   MqlDateTime d;
+   TimeToStruct(TimeCurrent(),d);
+   int h=d.hour;
+   if(TradeStartHour==TradeEndHour) return true;
+   if(TradeStartHour<TradeEndHour) return (h>=TradeStartHour && h<TradeEndHour);
+   return (h>=TradeStartHour || h<TradeEndHour);
 }
 
 //--- Ayar point'ini fiyat birimine çeviren ölçekli point
@@ -492,6 +521,8 @@ void EvaluateLiveBlock()
       why=StringFormat("spread sicramasi %.0f (ort %.0f) point",sp/PT(),g_avgSpread/PT());
 
    datetime now=TimeCurrent();
+   if(why=="" && !InTradingHours())
+      why="islem saati disi";
    if(why=="" && UseRolloverFilter)
    {
       MqlDateTime d;
@@ -582,6 +613,43 @@ void LogExecution(ulong deal)
                    DoubleToString(requested,_Digits),DoubleToString(fill,_Digits),
                    slip,spread,g_avgSpread/PT(),comm,profit));
    FileClose(h);
+}
+
+
+//--- v2.73: pozisyon LegBreakEvenPoints kârdaysa SL'yi net başa başa (komisyon dahil) çek
+void ManageLegBreakEven()
+{
+   if(LegBreakEvenPoints<=0.0) return;
+   MqlTick t;
+   if(!SymbolInfoTick(_Symbol,t)) return;
+   double stopLevel=(double)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL)*_Point;
+   double freeze=(double)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL)*_Point;
+   double minDist=MathMax(stopLevel,freeze)+2.0*_Point;
+
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!IsOurPosition(ticket)) continue;
+      ENUM_POSITION_TYPE type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double oldSL=PositionGetDouble(POSITION_SL);
+      double cur=(type==POSITION_TYPE_BUY ? t.bid : t.ask);
+      double gain=(type==POSITION_TYPE_BUY ? cur-entry : entry-cur);
+      if(gain<LegBreakEvenPoints*PT()) continue;
+      // zaten başa baş veya ötesinde mi?
+      if(type==POSITION_TYPE_BUY && oldSL>=entry) continue;
+      if(type==POSITION_TYPE_SELL && oldSL>0.0 && oldSL<=entry) continue;
+
+      double newSL=StopPriceForNetLock(type,PositionGetDouble(POSITION_VOLUME),entry,cur,
+                                       PositionGetDouble(POSITION_SWAP),
+                                       PositionCommissionForSelectedPosition(),0.01);
+      if(newSL<=0.0) continue;
+      newSL=NormalizePrice(newSL);
+      if(!IsLockStopValid(type,newSL,t,minDist)) continue;
+      trade.SetExpertMagicNumber(MagicNumber);
+      if(trade.PositionModify(ticket,newSL,PositionGetDouble(POSITION_TP)))
+         Print("ASLAN LEG BE | ticket=",ticket," | SL=",DoubleToString(newSL,_Digits));
+   }
 }
 
 //------------------------ helpers ----------------------------------
@@ -867,6 +935,14 @@ bool PlaceStop(ENUM_ORDER_TYPE type,double price,double lot,int level)
    trade.SetDeviationInPoints(SlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
 
+   // v2.73: isteğe bağlı pozisyon TP'si (maliyetin en az 2 katı)
+   double tp=0.0;
+   if(LegTakeProfitPoints>0.0)
+   {
+      double tpd=MathMax(LegTakeProfitPoints*PT(),TradingCostPrice()*2.0);
+      tp=NormalizePrice(type==ORDER_TYPE_BUY_STOP ? price+tpd : price-tpd);
+   }
+
    string side=(type==ORDER_TYPE_BUY_STOP ? "BUY" : "SELL");
    string comment="ASLAN_VK_"+side+"_L"+IntegerToString(level);
    bool ok=false;
@@ -876,7 +952,7 @@ bool PlaceStop(ENUM_ORDER_TYPE type,double price,double lot,int level)
       double off=MathMax(1.0,StopLimitOffsetPoints)*PT();
       double limitPrice=NormalizePrice(type==ORDER_TYPE_BUY_STOP ? price-off : price+off);
       ENUM_ORDER_TYPE slType=(type==ORDER_TYPE_BUY_STOP ? ORDER_TYPE_BUY_STOP_LIMIT : ORDER_TYPE_SELL_STOP_LIMIT);
-      ok=trade.OrderOpen(_Symbol,slType,lot,limitPrice,price,sl,0.0,ORDER_TIME_GTC,0,comment);
+      ok=trade.OrderOpen(_Symbol,slType,lot,limitPrice,price,sl,tp,ORDER_TIME_GTC,0,comment);
       if(ok)
          g_slPlaced++;
       else
@@ -889,15 +965,15 @@ bool PlaceStop(ENUM_ORDER_TYPE type,double price,double lot,int level)
                   " sl=",DoubleToString(sl,_Digits)," ask=",DoubleToString(t.ask,_Digits),
                   " bid=",DoubleToString(t.bid,_Digits)," | bu emir normal Stop ile konuyor");
          if(type==ORDER_TYPE_BUY_STOP)
-            ok=trade.BuyStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
+            ok=trade.BuyStop(lot,price,_Symbol,sl,tp,ORDER_TIME_GTC,0,comment);
          else
-            ok=trade.SellStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
+            ok=trade.SellStop(lot,price,_Symbol,sl,tp,ORDER_TIME_GTC,0,comment);
       }
    }
    else if(type==ORDER_TYPE_BUY_STOP)
-      ok=trade.BuyStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
+      ok=trade.BuyStop(lot,price,_Symbol,sl,tp,ORDER_TIME_GTC,0,comment);
    else
-      ok=trade.SellStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
+      ok=trade.SellStop(lot,price,_Symbol,sl,tp,ORDER_TIME_GTC,0,comment);
 
    if(ok)
       Print("ASLAN GRID ADD | ",comment," | price=",DoubleToString(price,_Digits),
@@ -1443,6 +1519,9 @@ void ManageCommonBasketTrail()
    }
 
    double protectedNet=totalBasketPeak-BasketTrailGivebackMoney;
+   // v2.73: büyük zirvelerde sabit geri verme yerine zirvenin en az X%'ini koru
+   if(BasketLockPercent>0.0)
+      protectedNet=MathMax(protectedNet,totalBasketPeak*BasketLockPercent/100.0);
    if(protectedNet<=0.0) return;
 
    // Software close is the primary protection. This is intentionally not
@@ -1471,7 +1550,7 @@ void ManageCommonBasketTrail()
 bool RiskAndDaily()
 {
    int today=DayKey();
-   if(today!=lockedDay){ lockedDay=today; dailyLocked=false; }
+   if(today!=lockedDay){ lockedDay=today; dailyLocked=false; g_dayPeak=0.0; }
    if(dailyLocked) return false;
 
    double balance=AccountInfoDouble(ACCOUNT_BALANCE);
@@ -1490,6 +1569,15 @@ bool RiskAndDaily()
    }
 
    double day=TodayNet()+OurFloatingNet();
+   if(day>g_dayPeak) g_dayPeak=day;
+   // v2.73: günlük kâr kilidi - zirve DailyLockStartMoney'i geçtikten sonra
+   // zirvenin DailyLockKeepPercent'ine düşülürse her şeyi kapat ve günü bitir.
+   if(UseDailyProfitLock && g_dayPeak>=DailyLockStartMoney &&
+      day<=g_dayPeak*DailyLockKeepPercent/100.0)
+   {
+      Print("ASLAN DAILY PROFIT LOCK | peak=",DoubleToString(g_dayPeak,2)," | now=",DoubleToString(day,2));
+      EndCycle(); dailyLocked=true; return false;
+   }
    if(UseDailyNetTarget && day>=DailyNetTarget)
    {
       Print("ASLAN DAILY TARGET | ",DoubleToString(day,2));
@@ -1540,7 +1628,7 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   Print("ASLAN v2.72 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
+   Print("ASLAN v2.73 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
    UpdateMemo();
    return INIT_SUCCEEDED;
 }
@@ -1594,7 +1682,7 @@ void UpdateMemo()
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double lot=AutoBalanceLot();
    string tf=(_Period==PERIOD_M5 ? "M5 OK" : "USE M5");
-   Comment("ASLAN VUR-KAC v2.72 LIVE\n",
+   Comment("ASLAN VUR-KAC v2.73 LIVE\n",
            "Recommended: XAUUSD M5 | ",tf,"\n",
            "Balance: ",DoubleToString(balance,2),
            " | Equity: ",DoubleToString(equity,2),"\n",
@@ -1611,7 +1699,8 @@ void UpdateMemo()
            "Slippage avg: ",DoubleToString(g_slipCount>0?g_slipSum/g_slipCount:0.0,1),
            " | max: ",DoubleToString(g_slipMax,1)," point (",IntegerToString(g_slipCount)," fill)",
            " | StopLimit: ",(StopLimitAvailable()?"ON":"OFF")," missed=",IntegerToString(g_missedFills),"\n",
-           "Live block: ",(g_blocked?g_blockReason:"yok"));
+           "Live block: ",(g_blocked?g_blockReason:"yok"),
+           " | Gun zirve: ",DoubleToString(g_dayPeak,2));
 }
 
 void OnTick()
@@ -1623,10 +1712,17 @@ void OnTick()
    if(!RiskAndDaily()) return;
    EvaluateLiveBlock();
    CloseBeforeRolloverIfNeeded();
+   if(UseTradingHours && CloseOutsideHours && !InTradingHours() && OurPositions()>0)
+   {
+      Print("ASLAN HOURS CLOSE | positions=",IntegerToString(OurPositions()),
+            " | basket=",DoubleToString(OurFloatingNet(),2));
+      CloseBasketPositionsOnly();
+   }
 
    ApplyInitialSLToPositions();
    ManageTargets();
    ManageRecoveryBreakEven();
+   ManageLegBreakEven();
    ManageTrailing();
    ManageCommonBasketTrail();
 
@@ -1658,6 +1754,6 @@ void OnDeinit(const int reason)
          " | stopLimitMissed=",IntegerToString(g_missedFills),
          " | avgSpread=",DoubleToString(g_avgSpread/PT(),1)," point");
    Comment("");
-   Print("ASLAN v2.72 DEINIT | reason=",reason);
+   Print("ASLAN v2.73 DEINIT | reason=",reason);
 }
 //+------------------------------------------------------------------+

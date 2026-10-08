@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.72 LIVE
+# ASLAN Vur-Kaç M5 v2.73 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -75,6 +75,32 @@ Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kaz
 | D | −2.197 $ | 0,81 | 7.781 | %22,3 | Orijinal v2.63 yerine v2.71 + v2.63 seti çalıştırıldı |
 
 Bu testlerde stop emirleri istenen fiyattan ortalama yaklaşık 10 point kötü doldu. v2.71'de tek bir Stop Limit reddi, EA'yı test boyunca kalıcı olarak normal Stop'a döndürüyordu. **v2.72'de ret yalnızca o emri etkiler.** Ret sebebi (retcode, fiyatlar) Journal'a yazılır ve `ASLAN EXEC SUMMARY` satırında kabul edilen ve reddedilen Stop Limit sayıları görünür.
+
+### v2.73: işlem saatleri ve kâr koruma
+
+Test A raporunun (v2.71) saat ve gün analizi:
+- 7.463 işlemin **7.459'u sunucu saatiyle 01:00–06:00 arasında** (Asya / gece) açıldı ve zararın tamamı bu saatlerden geldi (−1.575 $).
+- Sebep: Günlük −30 $ zarar sınırı, EA'yı her gün piyasanın en ince saatlerinde kilitliyordu. Londra ve New York seanslarında hiç işlem yapılmadı.
+- Gün içi kâr 20 $'ı aşan 43 günün **23'ü zararla kapandı**.
+
+| Ayar | Varsayılan | Açıklama |
+|---|---|---|
+| UseTradingHours / TradeStartHour / TradeEndHour | true / 10 / 19 | Sadece bu saatlerde (sunucu saati) emir konur. EC Markets yazın GMT+3 olduğu için 10–19, Londra seansına (07–16 GMT) denk gelir. |
+| CloseOutsideHours | true | Saat dışına çıkıldığında açık pozisyonlar kapatılır. |
+| UseDailyProfitLock / DailyLockStartMoney / DailyLockKeepPercent | true / 20 / 50 | Gün içi net kâr 20 $'ı geçtikten sonra zirvenin yarısı geri verilirse her şey kapatılır ve gün biter. |
+| BasketLockPercent | 50 | Basket trail zirvenin en az %50'sini korur. Sabit 3 $ geri verme kuralı küçük zirvelerde aynen devam eder. |
+| LegTakeProfitPoints | 0 | Her pozisyona TP (point). 0 = kapalı. Maliyetin 2 katından az olamaz. |
+| LegBreakEvenPoints | 0 | Pozisyon bu kadar point kâra geçince SL, komisyon dahil başa başa çekilir. 0 = kapalı. |
+
+**Dikkat:** v2.71 Londra ve NY saatlerinde neredeyse hiç işlem yapmadığı için bu saatlerdeki performansı **bilinmiyor**. Saat filtresi geceden gelen zararı keser, ama gündüz sonucunu ancak test gösterir.
+
+### v2.73 testleri
+
+| Set | Ne gösterir |
+|---|---|
+| `ASLAN_E_v273_varsayilan.set` | Saat filtresi (10–19) + günlük kâr kilidi + basket %50 |
+| `ASLAN_F_v273_TP_BE_acik.set` | E + pozisyon başı TP 120 point + başa baş 40 point |
+| `ASLAN_G_v273_saat_filtresi_kapali.set` | E, saat filtresi kapalı (gece dahil) |
 
 ### Karşılaştırma testleri
 Hepsi aynı dönem (2026.05.01–2026.10.06), 10.000 $, gerçek tick verisi ve Random delay ile yapılmalı:
