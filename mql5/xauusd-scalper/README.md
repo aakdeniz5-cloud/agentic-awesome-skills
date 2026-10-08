@@ -18,7 +18,7 @@ XAUUSD için M1/M5 scalping Expert Advisor. Martingale, grid ve averaging yok. H
 | Trend | Trend TF'de (M15) son kapanmış mumda EMA50 > EMA200 ise sadece alış, EMA50 < EMA200 ise sadece satış. İsteğe bağlı olarak kapanış fiyatı da EMA200'ün doğru tarafında olmalı. |
 | Giriş | Giriş TF'de (M5/M1) kapanmış mumlarda EMA9/EMA21 kesişimi. Alışta RSI(7) 50–75 arası, satışta 25–50 arası. |
 | Haber | Seçilen para birimlerindeki önemli haberlerden 30 dk önce ve 30 dk sonra yeni işlem açılmaz. İsterseniz açık pozisyonlar haberden önce kapatılır. |
-| Volatilite | ATR(14) `InpMinATRPips` altındaysa işlem açılmaz. İsteğe bağlı bir üst sınır da var. |
+| Volatilite | ATR(14), son 100 mumun ortalama ATR'sinin 0,8 katından düşükse işlem açılmaz. Böylece filtre altının fiyat seviyesinden bağımsız çalışır. İsteğe bağlı olarak sabit pip alt ve üst sınırları da kullanılabilir. |
 | SL / TP | SL = ATR × 1.5, TP = SL × 1.5. Broker'ın StopLevel ve FreezeLevel değerleri ile spread hesaba katılır. |
 | Yönetim | Fiyat TP mesafesinin %50'sine gelince SL girişe (+kilit pip) çekilir. Ardından ATR trailing devreye girer. |
 | Kontrol sıklığı | Sinyaller sadece yeni mum açılışında, BE ve trailing her tick'te kontrol edilir. |
@@ -53,8 +53,17 @@ Digits değeri 3 veya 5 ise pip = point × 10, diğer durumlarda pip = point. XA
 | Parametre | Varsayılan | Açıklama |
 |---|---|---|
 | InpATRPeriod | 14 | ATR periyodu. |
-| InpMinATRPips | 80 | Bu değerin altında işlem açılmaz (0.80$). |
+| InpMinATRPips | 0 | Sabit alt sınır, pip cinsinden. 0 = kapalı. Fiyat seviyesi değiştikçe anlamını yitirdiği için varsayılan olarak kapalı. |
 | InpMaxATRPips | 0 | Bu değerin üstünde işlem açılmaz, örneğin haber anlarındaki aşırı oynaklık için. 0 = kapalı. |
+| InpMinATRRatio | 0.8 | ATR, ortalama ATR'nin bu katından düşükse işlem açılmaz. 0 = kapalı. |
+| InpATRAvgPeriod | 100 | Ortalama ATR'nin hesaplandığı mum sayısı. |
+
+### Ek giriş filtreleri (isteğe bağlı, hepsi varsayılan kapalı)
+| Parametre | Varsayılan | Açıklama |
+|---|---|---|
+| InpRequireCloseBeyondSlow | false | Sinyal mumu EMA21'in doğru tarafında kapanmalı. |
+| InpTrendSlopeBars | 0 | Trend TF'deki EMA50, N mum öncesine göre trend yönünde eğimli olmalı. 0 = kapalı, test için 3–5 deneyin. |
+| InpUseADX / InpADXPeriod / InpADXMin | false / 14 / 20 | Giriş TF'de ADX bu değerin altındaysa (yatay piyasa) işlem açılmaz. |
 | InpSLATRMult | 1.5 | SL = ATR × çarpan. |
 | InpRiskReward | 1.5 | TP = SL × oran. |
 | InpMinSLPips | 50 | SL en az bu kadar olur. Çok dar SL'nin spread yüzünden tetiklenmesini önler. |
@@ -67,8 +76,9 @@ Digits değeri 3 veya 5 ise pip = point × 10, diğer durumlarda pip = point. XA
 | InpBETriggerPct | 50 | Kâr, TP mesafesinin yüzde kaçına ulaşınca SL girişe çekilir. |
 | InpBELockPips | 2 | SL, girişin bu kadar pip kârlı tarafına konur (komisyon ve spread için). |
 | InpUseTrailing | true | ATR trailing açık/kapalı. |
-| InpTrailATRMult | 1.0 | Trailing mesafesi = ATR × çarpan. |
-| InpTrailStepPips | 5 | SL en az bu kadar ilerlemeden güncellenmez. Gereksiz modify isteklerini engeller. |
+| InpTrailATRMult | 1.5 | Trailing mesafesi = ATR × çarpan. |
+| InpTrailStartR | 1.0 | Trailing, kâr ilk risk mesafesinin (R) bu katına ulaşınca başlar. 0 = hemen başlar. |
+| InpTrailStepATR | 0.25 | SL en az ATR × oran kadar ilerlemeden güncellenmez. |
 | InpTrailAfterBEOnly | true | Trailing sadece breakeven'dan sonra başlar. |
 
 ### Lot
@@ -153,17 +163,17 @@ Az sayıda ve geniş adımlı parametre optimize edin. Parametre sayısı arttı
 |---|---|---|
 | 1 | InpSLATRMult | 1.0 – 2.5 / 0.25 |
 | 1 | InpRiskReward | 1.0 – 2.5 / 0.25 |
-| 1 | InpMinATRPips | 40 – 160 / 20 (broker ve TF'ye bağlı) |
+| 1 | InpMinATRRatio | 0.6 – 1.2 / 0.1 |
 | 2 | InpEntryTF | M1, M5 |
 | 2 | InpBETriggerPct | 30 – 80 / 10 |
-| 2 | InpTrailATRMult | 0.5 – 2.0 / 0.25 (veya trailing kapalı/açık) |
+| 2 | InpTrailStartR / InpTrailATRMult | 0.75 – 1.25 / 0.25 ve 1.0 – 2.0 / 0.5 (veya trailing kapalı/açık) |
 | 3 | Seans saatleri | Sadece Londra, sadece NY, ikisi birden |
 | 3 | InpNewsMinutesBefore / After | 15, 30, 60 (sadece birkaç değer) |
 | 3 | InpMaxSpreadPips | Broker'ın tipik spread'inin 1.3–1.8 katı |
 
 **Sabit bırakın:** EMA 9/21/50/200 ve RSI(7) eşiklerini optimize etmeyin. Bunlar stratejinin mantığını tanımlar ve onları sonuca göre ayarlamak overfitting'in en yaygın kaynağıdır. Risk yüzdesi ve günlük limitler optimize edilecek parametreler değil, risk kararlarıdır.
 
-**Kriter:** "Balance max" yerine "Custom max" (ör. Recovery factor veya Profit factor × √işlem sayısı) ya da "Balance + max Profit Factor" seçin. Tek bir zirve değer yerine, komşu parametre değerlerinde de iyi sonuç veren geniş bir **plato** bölgesi arayın.
+**Kriter:** "Balance max" yerine **"Custom max"** seçin. EA'nın `OnTester` skoru (PF − 1) × √işlem sayısı / max(Equity DD %, 1) olarak hesaplanır. `InpTesterMinTrades` (varsayılan 100) değerinden az işlem yapan ayarlar 0 puan alır. Tek bir zirve değer yerine, komşu parametre değerlerinde de iyi sonuç veren geniş bir **plato** bölgesi arayın.
 
 ## Walk-forward test (overfitting'den kaçınmak için)
 

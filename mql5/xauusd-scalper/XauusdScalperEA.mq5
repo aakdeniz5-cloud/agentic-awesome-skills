@@ -6,7 +6,7 @@
 //|  Her işlem SL + TP ile birlikte gönderilir.                      |
 //+------------------------------------------------------------------+
 #property copyright "XauusdScalperEA"
-#property version   "1.10"
+#property version   "1.20"
 #property description "XAUUSD M1/M5 scalping EA: M15 EMA50/200 trend filtresi, EMA9/21 kesişimi + RSI(7) onayı,"
 #property description "ATR bazlı SL/TP, breakeven, trailing, risk yüzdesi lot, günlük limitler ve equity acil durdurma."
 
@@ -67,8 +67,17 @@ input double           InpRSISellMin            = 25.0;          // Satış: RSI
 
 input group "=== Volatilite Filtresi ==="
 input int              InpATRPeriod             = 14;            // ATR periyodu (giriş TF)
-input double           InpMinATRPips            = 80.0;          // Min ATR (pip) - altında işlem yok
+input double           InpMinATRPips            = 0.0;           // Min ATR (pip) - altında işlem yok (0 = kapalı)
 input double           InpMaxATRPips            = 0.0;           // Max ATR (pip) - üstünde işlem yok (0 = kapalı)
+input double           InpMinATRRatio           = 0.8;           // ATR >= ortalama ATR x oran olmalı (0 = kapalı)
+input int              InpATRAvgPeriod          = 100;           // Ortalama ATR için mum sayısı
+
+input group "=== Ek Giriş Filtreleri (opsiyonel) ==="
+input bool             InpRequireCloseBeyondSlow = false;        // Sinyal mumu yavaş EMA'nın doğru tarafında kapansın
+input int              InpTrendSlopeBars        = 0;             // Trend hızlı EMA eğimi: N mum önceye göre (0 = kapalı)
+input bool             InpUseADX                = false;         // ADX trend gücü filtresi
+input int              InpADXPeriod             = 14;            // ADX periyodu (giriş TF)
+input double           InpADXMin                = 20.0;          // Min ADX
 
 input group "=== Stop Loss / Take Profit ==="
 input double           InpSLATRMult             = 1.5;           // SL = ATR x çarpan
@@ -83,8 +92,9 @@ input double           InpBELockPips            = 2.0;           // Girişin öt
 
 input group "=== Trailing Stop (ATR) ==="
 input bool             InpUseTrailing           = true;          // Trailing aktif
-input double           InpTrailATRMult          = 1.0;           // Trailing mesafesi = ATR x çarpan
-input double           InpTrailStepPips         = 5.0;           // Minimum SL güncelleme adımı (pip)
+input double           InpTrailATRMult          = 1.5;           // Trailing mesafesi = ATR x çarpan
+input double           InpTrailStartR           = 1.0;           // Trailing, kâr bu kadar R olunca başlar (R = ilk SL mesafesi)
+input double           InpTrailStepATR          = 0.25;          // Minimum SL güncelleme adımı (ATR x oran)
 input bool             InpTrailAfterBEOnly      = true;          // Sadece breakeven sonrası trail et
 
 input group "=== Lot Yönetimi ==="
@@ -133,6 +143,9 @@ input string           InpNewsCsvFile           = "xau_news.csv"; // Haber CSV d
 input bool             InpNewsCsvCommonFolder   = true;          // CSV ortak klasörde (Terminal\Common\Files)
 input bool             InpNewsCsvTimeIsGMT      = false;         // CSV saatleri GMT (false = sunucu saati)
 
+input group "=== Optimizasyon ==="
+input int              InpTesterMinTrades       = 100;           // OnTester: bu kadar işlemden azsa skor 0
+
 input group "=== Panel ==="
 input bool             InpShowPanel             = true;          // Grafikte bilgi paneli göster
 input int              InpPanelX                = 10;            // Panel X konumu
@@ -149,6 +162,7 @@ int      hTrendFast = INVALID_HANDLE;
 int      hTrendSlow = INVALID_HANDLE;
 int      hRSI       = INVALID_HANDLE;
 int      hATR       = INVALID_HANDLE;
+int      hADX       = INVALID_HANDLE;
 
 double   g_point    = 0.0;
 double   g_pip      = 0.0;
@@ -224,6 +238,15 @@ int OnInit()
    hTrendSlow = iMA(_Symbol, InpTrendTF, InpTrendSlowEMA, 0, MODE_EMA, InpAppliedPrice);
    hRSI       = iRSI(_Symbol, InpEntryTF, InpRSIPeriod, InpAppliedPrice);
    hATR       = iATR(_Symbol, InpEntryTF, InpATRPeriod);
+   if(InpUseADX)
+     {
+      hADX = iADX(_Symbol, InpEntryTF, InpADXPeriod);
+      if(hADX == INVALID_HANDLE)
+        {
+         PrintFormat("[HATA] ADX handle oluşturulamadı. Hata=%d", GetLastError());
+         return(INIT_FAILED);
+        }
+     }
 
    if(hFastEMA == INVALID_HANDLE || hSlowEMA == INVALID_HANDLE || hTrendFast == INVALID_HANDLE ||
       hTrendSlow == INVALID_HANDLE || hRSI == INVALID_HANDLE || hATR == INVALID_HANDLE)
@@ -288,6 +311,7 @@ void OnDeinit(const int reason)
    if(hTrendSlow != INVALID_HANDLE) IndicatorRelease(hTrendSlow);
    if(hRSI       != INVALID_HANDLE) IndicatorRelease(hRSI);
    if(hATR       != INVALID_HANDLE) IndicatorRelease(hATR);
+   if(hADX       != INVALID_HANDLE) IndicatorRelease(hADX);
 //--- Paneli temizle
    ObjectsDeleteAll(0, PANEL_PREFIX);
    ChartRedraw();
@@ -769,11 +793,45 @@ void CheckEntrySignal()
       PrintFormat("[BİLGİ] ATR aşırı yüksek (%.1f pip > %.1f). Sinyal kontrolü atlandı.", atrPips, InpMaxATRPips);
       return;
      }
+//--- Göreli volatilite: ATR, kendi ortalamasının altında ise piyasa durgun
+   if(InpMinATRRatio > 0.0 && InpATRAvgPeriod > 1)
+     {
+      double atrArr[];
+      if(CopyBuffer(hATR, 0, 1, InpATRAvgPeriod, atrArr) != InpATRAvgPeriod)
+        {
+         PrintFormat("[HATA] Ortalama ATR için veri alınamadı. Hata=%d", GetLastError());
+         return;
+        }
+      double sum = 0.0;
+      for(int k = 0; k < InpATRAvgPeriod; k++)
+         sum += atrArr[k];
+      double atrAvg = sum / InpATRAvgPeriod;
+      if(atrAvg > 0.0 && atr < atrAvg * InpMinATRRatio)
+         return;
+     }
+//--- ADX trend gücü filtresi
+   if(InpUseADX)
+     {
+      double adx = 0.0;
+      if(!GetValue(hADX, 0, 1, adx))
+         return;
+      if(adx < InpADXMin)
+         return;
+     }
 
 //--- Trend filtresi (trend TF son kapanmış mum)
    double trendClose = iClose(_Symbol, InpTrendTF, 1);
    bool trendUp   = (tFast > tSlow) && (!InpRequirePriceVsSlowEMA || trendClose > tSlow);
    bool trendDown = (tFast < tSlow) && (!InpRequirePriceVsSlowEMA || trendClose < tSlow);
+//--- Trend eğimi: hızlı trend EMA'sı N mum öncesine göre trend yönünde olmalı
+   if(InpTrendSlopeBars > 0)
+     {
+      double tFastPrev = 0.0;
+      if(!GetValue(hTrendFast, 0, 1 + InpTrendSlopeBars, tFastPrev))
+         return;
+      trendUp   = trendUp   && (tFast > tFastPrev);
+      trendDown = trendDown && (tFast < tFastPrev);
+     }
 
 //--- EMA kesişimi
    bool crossUp   = (f2 <= s2 && f1 > s1);
@@ -782,6 +840,14 @@ void CheckEntrySignal()
 //--- RSI onayı
    bool rsiBuy  = (rsi > InpRSIBuyMin  && rsi < InpRSIBuyMax);
    bool rsiSell = (rsi < InpRSISellMax && rsi > InpRSISellMin);
+
+//--- Opsiyonel: sinyal mumu yavaş EMA'nın doğru tarafında kapanmalı
+   if(InpRequireCloseBeyondSlow)
+     {
+      double close1 = iClose(_Symbol, InpEntryTF, 1);
+      crossUp   = crossUp   && (close1 > s1);
+      crossDown = crossDown && (close1 < s1);
+     }
 
    if(crossUp && trendUp && rsiBuy)
       OpenTrade(ORDER_TYPE_BUY, atr);
@@ -940,7 +1006,7 @@ void ManagePositions()
    double ask       = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double stopLevel = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * g_point;
    double freeze    = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL) * g_point;
-   double step      = InpTrailStepPips * g_pip;
+   double step      = haveATR ? atr * InpTrailStepATR : 0.0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
@@ -969,8 +1035,10 @@ void ManagePositions()
             if(sl == 0.0 || be > newSL)
                newSL = be;
            }
-         //--- ATR trailing
-         if(InpUseTrailing && haveATR && atr > 0.0 && (!InpTrailAfterBEOnly || (newSL > 0.0 && newSL >= open)))
+         //--- ATR trailing: kâr InpTrailStartR x ilk risk olduktan sonra (ilk risk = TP mesafesi / R:Ö)
+         double riskDist = (tpDist > 0.0 && InpRiskReward > 0.0) ? tpDist / InpRiskReward : 0.0;
+         bool   trailOK  = (InpTrailStartR <= 0.0) || (riskDist > 0.0 && profitDist >= riskDist * InpTrailStartR);
+         if(InpUseTrailing && trailOK && haveATR && atr > 0.0 && (!InpTrailAfterBEOnly || (newSL > 0.0 && newSL >= open)))
            {
             double tr = bid - atr * InpTrailATRMult;
             if(newSL == 0.0 || tr > newSL + step)
@@ -999,7 +1067,9 @@ void ManagePositions()
             if(sl == 0.0 || be < newSL)
                newSL = be;
            }
-         if(InpUseTrailing && haveATR && atr > 0.0 && (!InpTrailAfterBEOnly || (newSL > 0.0 && newSL <= open)))
+         double riskDist = (tpDist > 0.0 && InpRiskReward > 0.0) ? tpDist / InpRiskReward : 0.0;
+         bool   trailOK  = (InpTrailStartR <= 0.0) || (riskDist > 0.0 && profitDist >= riskDist * InpTrailStartR);
+         if(InpUseTrailing && trailOK && haveATR && atr > 0.0 && (!InpTrailAfterBEOnly || (newSL > 0.0 && newSL <= open)))
            {
             double tr = ask + atr * InpTrailATRMult;
             if(newSL == 0.0 || tr < newSL - step)
@@ -1315,6 +1385,25 @@ string NextNewsText()
   }
 
 //====================================================================
+//                    OPTİMİZASYON KRİTERİ (Custom max)
+//  Skor = (ProfitFactor - 1) x karekök(işlem sayısı) / max(Equity DD %, 1)
+//  Az işlemle şans eseri yüksek PF alan ayarları ve yüksek DD'yi cezalandırır.
+//====================================================================
+double OnTester()
+  {
+   double trades = TesterStatistics(STAT_TRADES);
+   if(trades < InpTesterMinTrades)
+      return(0.0);
+   double pf = TesterStatistics(STAT_PROFIT_FACTOR);
+   double dd = TesterStatistics(STAT_EQUITY_DDREL_PERCENT);
+   if(pf <= 0.0)
+      return(0.0);
+   if(pf > 10.0)
+      pf = 10.0;              // sadece kazançlı işlem durumunda sonsuz PF'yi sınırla
+   return((pf - 1.0) * MathSqrt(trades) / MathMax(dd, 1.0));
+  }
+
+//====================================================================
 //                         BİLGİ PANELİ
 //====================================================================
 void CreateLabel(const string name, const int x, const int y)
@@ -1389,7 +1478,7 @@ void UpdatePanel(const bool force)
    SetLine(4, "Ard. zarar : " + (string)g_consecLosses + " / " + consecMax);
    SetLine(5, StringFormat("Spread     : %.1f pip (max %.1f)", SpreadPips(), InpMaxSpreadPips),
            SpreadPips() > InpMaxSpreadPips ? clrOrange : clrWhite);
-   SetLine(6, StringFormat("ATR        : %.1f pip (min %.1f)", atr / g_pip, InpMinATRPips));
+   SetLine(6, StringFormat("ATR        : %.1f pip", atr / g_pip));
    SetLine(7, "Seans      : " + (IsTradingSession() ? "ACIK" : "KAPALI"));
    SetLine(8, "Pozisyon   : " + (string)CountPositions() + " / " + (string)InpMaxPositions);
    SetLine(9, StringFormat("Equity DD  : %.2f%% (max %.1f%%)", dd, InpMaxEquityDDPct), dd > InpMaxEquityDDPct * 0.7 ? clrOrange : clrWhite);
