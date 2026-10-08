@@ -4,8 +4,8 @@
 //| This is a reconstruction, NOT the original proprietary source.  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.71"
-#property description "ASLAN Vur-Kac M5 v2.71 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
+#property version "2.72"
+#property description "ASLAN Vur-Kac M5 v2.72 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -177,7 +177,8 @@ double   g_slipSum      = 0.0;
 double   g_slipMax      = 0.0;
 int      g_slipCount    = 0;
 int      g_missedFills  = 0;   // v2.71: süresinde dolmadığı için iptal edilen stop limit
-bool     g_stopLimitRejected = false; // sunucu stop limit'i reddederse normal stop'a dön
+int      g_slPlaced     = 0;   // v2.72: kabul edilen stop limit emri
+int      g_slRejected   = 0;   // v2.72: reddedilip o emir için normal stop'a dönülen
 ulong    g_limTicket[];        // tetiklenmiş (limit'e dönmüş) emirler
 datetime g_limSeen[];          // ilk görüldüğü zaman
 
@@ -203,7 +204,7 @@ bool IsSideType(ENUM_ORDER_TYPE t,ENUM_ORDER_TYPE side)
 //--- Sembol Stop Limit destekliyor mu?
 bool StopLimitAvailable()
 {
-   if(!UseStopLimit || g_stopLimitRejected) return false;
+   if(!UseStopLimit) return false;
    int modes=(int)SymbolInfoInteger(_Symbol,SYMBOL_ORDER_MODE);
    return (modes & SYMBOL_ORDER_STOP_LIMIT)!=0;
 }
@@ -876,13 +877,17 @@ bool PlaceStop(ENUM_ORDER_TYPE type,double price,double lot,int level)
       double limitPrice=NormalizePrice(type==ORDER_TYPE_BUY_STOP ? price-off : price+off);
       ENUM_ORDER_TYPE slType=(type==ORDER_TYPE_BUY_STOP ? ORDER_TYPE_BUY_STOP_LIMIT : ORDER_TYPE_SELL_STOP_LIMIT);
       ok=trade.OrderOpen(_Symbol,slType,lot,limitPrice,price,sl,0.0,ORDER_TIME_GTC,0,comment);
-      if(!ok && (trade.ResultRetcode()==TRADE_RETCODE_INVALID_PRICE ||
-                 trade.ResultRetcode()==TRADE_RETCODE_INVALID_ORDER ||
-                 trade.ResultRetcode()==TRADE_RETCODE_INVALID))
+      if(ok)
+         g_slPlaced++;
+      else
       {
-         g_stopLimitRejected=true;
-         Print("ASLAN STOPLIMIT REJECTED | ",trade.ResultRetcode()," | ",trade.ResultRetcodeDescription(),
-               " | normal Stop emirlerine donuluyor");
+         // v2.72: ret sadece BU emri etkiler; sonraki emirler yine stop limit dener.
+         g_slRejected++;
+         if(g_slRejected<=20)
+            Print("ASLAN STOPLIMIT REJECTED | ",trade.ResultRetcode()," | ",trade.ResultRetcodeDescription(),
+                  " | stop=",DoubleToString(price,_Digits)," limit=",DoubleToString(limitPrice,_Digits),
+                  " sl=",DoubleToString(sl,_Digits)," ask=",DoubleToString(t.ask,_Digits),
+                  " bid=",DoubleToString(t.bid,_Digits)," | bu emir normal Stop ile konuyor");
          if(type==ORDER_TYPE_BUY_STOP)
             ok=trade.BuyStop(lot,price,_Symbol,sl,0.0,ORDER_TIME_GTC,0,comment);
          else
@@ -1535,7 +1540,7 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   Print("ASLAN v2.71 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
+   Print("ASLAN v2.72 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
    UpdateMemo();
    return INIT_SUCCEEDED;
 }
@@ -1589,7 +1594,7 @@ void UpdateMemo()
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double lot=AutoBalanceLot();
    string tf=(_Period==PERIOD_M5 ? "M5 OK" : "USE M5");
-   Comment("ASLAN VUR-KAC v2.71 LIVE\n",
+   Comment("ASLAN VUR-KAC v2.72 LIVE\n",
            "Recommended: XAUUSD M5 | ",tf,"\n",
            "Balance: ",DoubleToString(balance,2),
            " | Equity: ",DoubleToString(equity,2),"\n",
@@ -1648,9 +1653,11 @@ void OnDeinit(const int reason)
    Print("ASLAN EXEC SUMMARY | fills=",IntegerToString(g_slipCount),
          " | avgSlip=",DoubleToString(g_slipCount>0?g_slipSum/g_slipCount:0.0,2)," point",
          " | maxSlip=",DoubleToString(g_slipMax,1),
+         " | stopLimitPlaced=",IntegerToString(g_slPlaced),
+         " | stopLimitRejected=",IntegerToString(g_slRejected),
          " | stopLimitMissed=",IntegerToString(g_missedFills),
          " | avgSpread=",DoubleToString(g_avgSpread/PT(),1)," point");
    Comment("");
-   Print("ASLAN v2.71 DEINIT | reason=",reason);
+   Print("ASLAN v2.72 DEINIT | reason=",reason);
 }
 //+------------------------------------------------------------------+

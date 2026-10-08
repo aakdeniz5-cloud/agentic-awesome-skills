@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.71 LIVE
+# ASLAN Vur-Kaç M5 v2.72 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -65,14 +65,25 @@ v2.71 bu maliyeti hedefliyor:
 
 Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kazandıran işlemleri tam o hareketler olabilir. Sonuç ancak test edilerek görülür. Test bittiğinde Journal'daki `ASLAN EXEC SUMMARY` satırı ortalama kaymayı ve kaçırılan emir sayısını gösterir.
 
+### v2.71 test sonuçları ve v2.72 düzeltmesi
+
+| Test | Net | PF | İşlem | Maks. DD | Not |
+|---|---|---|---|---|---|
+| A (v2.71 varsayılan) | −1.597 $ | 0,85 | 7.463 | %17,7 | Stop Limit fiilen çalışmadı (7.463 girişin 12'si) |
+| B (orijinal mesafe) | −2.244 $ | 0,79 | 8.628 | %22,8 | Stop Limit yine çalışmadı |
+| C (Stop Limit kapalı) | −1.984 $ | 0,81 | 7.086 | %21,1 | |
+| D | −2.197 $ | 0,81 | 7.781 | %22,3 | Orijinal v2.63 yerine v2.71 + v2.63 seti çalıştırıldı |
+
+Bu testlerde stop emirleri istenen fiyattan ortalama yaklaşık 10 point kötü doldu. v2.71'de tek bir Stop Limit reddi, EA'yı test boyunca kalıcı olarak normal Stop'a döndürüyordu. **v2.72'de ret yalnızca o emri etkiler.** Ret sebebi (retcode, fiyatlar) Journal'a yazılır ve `ASLAN EXEC SUMMARY` satırında kabul edilen ve reddedilen Stop Limit sayıları görünür.
+
 ### Karşılaştırma testleri
 Hepsi aynı dönem (2026.05.01–2026.10.06), 10.000 $, gerçek tick verisi ve Random delay ile yapılmalı:
 
 | Test | Ayar | Ne gösterir |
 |---|---|---|
-| A | v2.71 varsayılan | Stop Limit + maliyet bazlı mesafeler |
-| B | v2.71, `GridSpreadMultiplier=0`, `SLSpreadMultiplier=0` | Stop Limit + orijinal 15/30 point mesafeler |
-| C | v2.71, `UseStopLimit=false` | v2.70 ile aynı. Kıyas için −1.900 $ |
+| A | v2.72 varsayılan | Stop Limit + maliyet bazlı mesafeler |
+| B | v2.72, `GridSpreadMultiplier=0`, `SLSpreadMultiplier=0` | Stop Limit + orijinal 15/30 point mesafeler |
+| C | v2.72, `UseStopLimit=false` | v2.70 ile aynı. Kıyas için −1.900 $ |
 | D | Orijinal v2.63 | Değişikliklerin hiçbiri olmadan |
 
 ## Önerilen test sırası
