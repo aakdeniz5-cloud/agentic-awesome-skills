@@ -6,7 +6,7 @@
 //|  Her işlem SL + TP ile birlikte gönderilir.                      |
 //+------------------------------------------------------------------+
 #property copyright "XauusdScalperEA"
-#property version   "1.00"
+#property version   "1.10"
 #property description "XAUUSD M1/M5 scalping EA: M15 EMA50/200 trend filtresi, EMA9/21 kesişimi + RSI(7) onayı,"
 #property description "ATR bazlı SL/TP, breakeven, trailing, risk yüzdesi lot, günlük limitler ve equity acil durdurma."
 
@@ -17,6 +17,24 @@ enum ENUM_LOT_MODE
   {
    LOT_RISK_PERCENT = 0, // Bakiyenin %'si kadar risk
    LOT_FIXED        = 1  // Sabit lot
+  };
+
+//--- Haber önem seviyesi filtresi
+enum ENUM_NEWS_LEVEL
+  {
+   NEWS_ALL         = 1, // Düşük + Orta + Yüksek
+   NEWS_MEDIUM_HIGH = 2, // Orta + Yüksek
+   NEWS_HIGH_ONLY   = 3  // Sadece yüksek önemli
+  };
+
+//--- Haber olayı (sunucu saatiyle)
+struct NewsEvent
+  {
+   datetime          time;
+   string            currency;
+   int               importance;
+   string            title;
+   bool              fromCsv;
   };
 
 //====================================================================
@@ -89,7 +107,8 @@ input bool             InpResetEmergency        = false;         // Acil durum k
 input group "=== Piyasa Filtreleri ==="
 input double           InpMaxSpreadPips         = 35.0;          // Max spread (pip)
 input int              InpMaxSlippagePoints     = 30;            // Max slippage / deviation (point)
-input int              InpBrokerGMTOffset       = 2;             // Broker sunucu saati GMT farkı (saat)
+input int              InpBrokerGMTOffset       = 2;             // Broker sunucu saati GMT farkı (kış saati, saat)
+input bool             InpAutoUSDST             = true;          // ABD yaz saatinde farka otomatik +1 ekle
 input bool             InpUseLondon             = true;          // Londra seansı
 input int              InpLondonStartGMT        = 7;             // Londra başlangıç (GMT saat)
 input int              InpLondonEndGMT          = 16;            // Londra bitiş (GMT saat)
@@ -100,6 +119,19 @@ input bool             InpFridayFilter          = true;          // Cuma akşam�
 input int              InpFridayStopHourGMT     = 19;            // Cuma bu saatten sonra yeni işlem yok (GMT)
 input bool             InpCloseBeforeWeekend    = false;         // Hafta sonu öncesi açık pozisyonları kapat
 input int              InpFridayCloseHourGMT    = 20;            // Cuma kapanış saati (GMT)
+
+input group "=== Haber Filtresi ==="
+input bool             InpUseNewsFilter         = true;          // Haber filtresi aktif
+input ENUM_NEWS_LEVEL  InpNewsMinImportance     = NEWS_HIGH_ONLY; // Dikkate alınacak min haber önemi
+input string           InpNewsCurrencies        = "USD";         // Para birimleri (virgülle, örn. USD,EUR)
+input int              InpNewsMinutesBefore     = 30;            // Haberden kaç dk ÖNCE yeni işlem yok
+input int              InpNewsMinutesAfter      = 30;            // Haberden kaç dk SONRA yeni işlem yok
+input bool             InpNewsClosePositions    = false;         // Haber öncesi açık pozisyonları kapat
+input int              InpNewsCloseMinutesBefore = 5;            // Habere kaç dk kala kapatılsın
+input bool             InpNewsUseCalendar       = true;          // Canlıda MT5 ekonomik takvimini kullan
+input string           InpNewsCsvFile           = "xau_news.csv"; // Haber CSV dosyası (tester için, boş = yok)
+input bool             InpNewsCsvCommonFolder   = true;          // CSV ortak klasörde (Terminal\Common\Files)
+input bool             InpNewsCsvTimeIsGMT      = false;         // CSV saatleri GMT (false = sunucu saati)
 
 input group "=== Panel ==="
 input bool             InpShowPanel             = true;          // Grafikte bilgi paneli göster
@@ -142,8 +174,13 @@ string   g_lastReason      = "";
 uint     g_lastPanelTick   = 0;
 bool     g_panelEnabled    = false;
 
+NewsEvent g_news[];                 // zamana göre sıralı haber listesi (CSV + takvim)
+int      g_newsStart       = 0;     // geçmiş olayları atlamak için başlangıç indeksi
+string   g_newsCurrencies[];
+datetime g_lastCalendarUpdate = 0;
+
 #define PANEL_PREFIX "XSCALP_"
-#define PANEL_LINES  10
+#define PANEL_LINES  11
 
 //====================================================================
 //                         OnInit / OnDeinit
@@ -218,6 +255,10 @@ int OnInit()
    g_currentDay = 0;
    CheckNewDay();
 
+//--- Haber filtresi
+   if(InpUseNewsFilter)
+      InitNews();
+
 //--- İlk mumda işlem açmamak için mevcut mum zamanını kaydet
    g_lastBarTime = iTime(_Symbol, InpEntryTF, 0);
 
@@ -280,10 +321,14 @@ void OnTick()
 //--- 3) Hafta sonu öncesi kapatma (opsiyonel)
    CheckWeekendClose();
 
-//--- 4) Açık pozisyon yönetimi (breakeven / trailing) - her tick
+//--- 4) Haber takvimini güncelle, gerekirse haber öncesi kapat
+   UpdateCalendarNews(false);
+   CheckNewsClose();
+
+//--- 5) Açık pozisyon yönetimi (breakeven / trailing) - her tick
    ManagePositions();
 
-//--- 5) Yeni sinyal kontrolü - SADECE yeni mum açılışında
+//--- 6) Yeni sinyal kontrolü - SADECE yeni mum açılışında
    if(IsNewBar())
      {
       RefreshDailyStats();
@@ -301,6 +346,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OnTimer()
   {
+   UpdateCalendarNews(false);
    UpdatePanel(true);
   }
 
@@ -391,10 +437,50 @@ bool IsNewBar()
   }
 
 //--- Sunucu zamanından GMT zaman yapısı
+//--- Ayın n'inci Pazar günü (00:00)
+datetime NthSunday(const int year, const int month, const int n)
+  {
+   MqlDateTime d;
+   ZeroMemory(d);
+   d.year = year;
+   d.mon  = month;
+   d.day  = 1;
+   datetime first = StructToTime(d);
+   TimeToStruct(first, d);
+   int add = (7 - d.day_of_week) % 7;
+   return(first + (datetime)((add + 7 * (n - 1)) * 86400));
+  }
+
+//--- Verilen GMT zamanı ABD yaz saati döneminde mi? (Mart 2. Pazar - Kasım 1. Pazar)
+bool IsUSDST(const datetime gmt)
+  {
+   MqlDateTime dt;
+   TimeToStruct(gmt, dt);
+   datetime start = NthSunday(dt.year, 3, 2) + 7 * 3600;   // 02:00 New York = 07:00 GMT
+   datetime end   = NthSunday(dt.year, 11, 1) + 6 * 3600;  // 02:00 New York = 06:00 GMT
+   return(gmt >= start && gmt < end);
+  }
+
+//--- Broker GMT farkı (saniye), yaz saati dahil
+int BrokerOffsetSeconds(const datetime gmt)
+  {
+   int off = InpBrokerGMTOffset;
+   if(InpAutoUSDST && IsUSDST(gmt))
+      off += 1;
+   return(off * 3600);
+  }
+
+//--- Sunucu zamanından GMT zamanı
+datetime ServerToGmt(const datetime server)
+  {
+   datetime approx = server - (datetime)(InpBrokerGMTOffset * 3600);
+   return(server - (datetime)BrokerOffsetSeconds(approx));
+  }
+
+//--- Sunucu zamanından GMT zaman yapısı
 void GmtTime(MqlDateTime &dt)
   {
-   datetime gmt = TimeCurrent() - (datetime)(InpBrokerGMTOffset * 3600);
-   TimeToStruct(gmt, dt);
+   TimeToStruct(ServerToGmt(TimeCurrent()), dt);
   }
 
 //--- Saat penceresi kontrolü (gece yarısını aşan pencereler desteklenir)
@@ -648,6 +734,9 @@ bool CanOpenNewTrade(string &reason)
      { reason = "Cuma akşamı / hafta sonu"; return(false); }
    if(!IsTradingSession())
      { reason = "Seans dışı"; return(false); }
+   string newsReason = "";
+   if(IsNewsBlocked(newsReason))
+     { reason = newsReason; return(false); }
    double spr = SpreadPips();
    if(InpMaxSpreadPips > 0.0 && spr > InpMaxSpreadPips)
      { reason = StringFormat("Spread yüksek (%.1f pip)", spr); return(false); }
@@ -943,6 +1032,289 @@ void ManagePositions()
   }
 
 //====================================================================
+//                         HABER FİLTRESİ
+//  Canlı: MT5 dahili ekonomik takvimi (CalendarValueHistory).
+//  Strategy Tester: takvim fonksiyonları çalışmaz, CSV dosyası kullanılır.
+//  CSV formatı: YYYY.MM.DD HH:MM,PARA_BIRIMI,ONEM(1-3),Başlık
+//====================================================================
+string TrimStr(string s)
+  {
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   return(s);
+  }
+
+//--- Para birimi listesini hazırla
+void InitNewsCurrencies()
+  {
+   ArrayResize(g_newsCurrencies, 0);
+   string parts[];
+   int n = StringSplit(InpNewsCurrencies, ',', parts);
+   for(int i = 0; i < n; i++)
+     {
+      string c = TrimStr(parts[i]);
+      StringToUpper(c);
+      if(c == "")
+         continue;
+      int k = ArraySize(g_newsCurrencies);
+      ArrayResize(g_newsCurrencies, k + 1);
+      g_newsCurrencies[k] = c;
+     }
+  }
+
+//--- Para birimi filtreye uyuyor mu?
+bool CurrencyMatches(string cur)
+  {
+   if(ArraySize(g_newsCurrencies) == 0)
+      return(true);
+   cur = TrimStr(cur);
+   StringToUpper(cur);
+   if(cur == "" || cur == "ALL")
+      return(true);
+   for(int i = 0; i < ArraySize(g_newsCurrencies); i++)
+      if(cur == g_newsCurrencies[i])
+         return(true);
+   return(false);
+  }
+
+//--- Listeye olay ekle
+void AddNews(NewsEvent &arr[], const datetime t, const string cur, const int imp, const string title, const bool fromCsv)
+  {
+   int k = ArraySize(arr);
+   ArrayResize(arr, k + 1, 256);
+   arr[k].time       = t;
+   arr[k].currency   = cur;
+   arr[k].importance = imp;
+   arr[k].title      = title;
+   arr[k].fromCsv    = fromCsv;
+  }
+
+//--- Zamana göre sırala (insertion sort; zaten sıralı veride O(n))
+void SortNews(NewsEvent &arr[])
+  {
+   int n = ArraySize(arr);
+   for(int i = 1; i < n; i++)
+     {
+      NewsEvent key = arr[i];
+      int j = i - 1;
+      while(j >= 0 && arr[j].time > key.time)
+        {
+         arr[j + 1] = arr[j];
+         j--;
+        }
+      arr[j + 1] = key;
+     }
+  }
+
+//--- Takvim önem seviyesini 1-3'e çevir
+int ImportanceToInt(const ENUM_CALENDAR_EVENT_IMPORTANCE imp)
+  {
+   switch(imp)
+     {
+      case CALENDAR_IMPORTANCE_HIGH:
+         return(3);
+      case CALENDAR_IMPORTANCE_MODERATE:
+         return(2);
+      case CALENDAR_IMPORTANCE_LOW:
+         return(1);
+      default:
+         return(0);
+     }
+  }
+
+//--- CSV dosyasından haberleri yükle
+void LoadNewsCsv(NewsEvent &arr[])
+  {
+   if(InpNewsCsvFile == "")
+      return;
+   int flags = FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ;
+   if(InpNewsCsvCommonFolder)
+      flags |= FILE_COMMON;
+   ResetLastError();
+   int h = FileOpen(InpNewsCsvFile, flags);
+   if(h == INVALID_HANDLE)
+     {
+      PrintFormat("[BİLGİ] Haber CSV açılamadı (%s, ortak klasör=%s, hata=%d).",
+                  InpNewsCsvFile, InpNewsCsvCommonFolder ? "evet" : "hayır", GetLastError());
+      return;
+     }
+   int loaded = 0, bad = 0;
+   while(!FileIsEnding(h))
+     {
+      string line = TrimStr(FileReadString(h));
+      if(line == "" || StringGetCharacter(line, 0) == '#')
+         continue;
+      string f[];
+      int n = StringSplit(line, ',', f);
+      if(n < 3)
+        { bad++; continue; }
+      string ts = TrimStr(f[0]);
+      StringReplace(ts, "-", ".");
+      datetime t = StringToTime(ts);
+      if(t <= 0)
+        { bad++; continue; }
+      if(InpNewsCsvTimeIsGMT)
+         t += (datetime)BrokerOffsetSeconds(t);
+      int imp = (int)StringToInteger(TrimStr(f[2]));
+      if(imp < (int)InpNewsMinImportance)
+         continue;
+      string cur = TrimStr(f[1]);
+      if(!CurrencyMatches(cur))
+         continue;
+      string title = (n >= 4) ? TrimStr(f[3]) : "Haber";
+      AddNews(arr, t, cur, imp, title, true);
+      loaded++;
+     }
+   FileClose(h);
+   PrintFormat("[BİLGİ] Haber CSV yüklendi: %d olay (hatalı satır: %d).", loaded, bad);
+  }
+
+//--- Haber modülünü başlat
+void InitNews()
+  {
+   InitNewsCurrencies();
+   ArrayResize(g_news, 0);
+   LoadNewsCsv(g_news);
+   SortNews(g_news);
+   g_newsStart = 0;
+   UpdateCalendarNews(true);
+   if(MQLInfoInteger(MQL_TESTER) && ArraySize(g_news) == 0)
+      Print("[UYARI] Strategy Tester'da ekonomik takvim çalışmaz ve haber CSV'si boş. Haber filtresi bu testte ETKİSİZ.");
+  }
+
+//--- Canlıda ekonomik takvimden olayları çek (15 dk'da bir)
+void UpdateCalendarNews(const bool force)
+  {
+   if(!InpUseNewsFilter || !InpNewsUseCalendar || MQLInfoInteger(MQL_TESTER))
+      return;
+   datetime now = TimeTradeServer();
+   if(!force && now - g_lastCalendarUpdate < 900)
+      return;
+   g_lastCalendarUpdate = now;
+
+   datetime from = now - 86400;
+   datetime to   = now + 3 * 86400;
+   NewsEvent fresh[];
+   bool okAny = false;
+   int  nc    = ArraySize(g_newsCurrencies);
+   int  loops = (nc > 0) ? nc : 1;
+
+   for(int c = 0; c < loops; c++)
+     {
+      MqlCalendarValue values[];
+      ResetLastError();
+      bool ok = (nc > 0) ? CalendarValueHistory(values, from, to, NULL, g_newsCurrencies[c])
+                         : CalendarValueHistory(values, from, to);
+      if(!ok)
+        {
+         PrintFormat("[UYARI] Ekonomik takvim okunamadı (%s). Hata=%d", (nc > 0) ? g_newsCurrencies[c] : "tümü", GetLastError());
+         continue;
+        }
+      okAny = true;
+      for(int i = 0; i < ArraySize(values); i++)
+        {
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(values[i].event_id, ev))
+            continue;
+         if(ev.type == CALENDAR_TYPE_HOLIDAY || ev.time_mode != CALENDAR_TIMEMODE_DATETIME)
+            continue;
+         int imp = ImportanceToInt(ev.importance);
+         if(imp < (int)InpNewsMinImportance)
+            continue;
+         string cur = (nc > 0) ? g_newsCurrencies[c] : "";
+         MqlCalendarCountry country;
+         if(cur == "" && CalendarCountryById(ev.country_id, country))
+            cur = country.currency;
+         AddNews(fresh, values[i].time, cur, imp, ev.name, false);
+        }
+     }
+
+   if(!okAny)
+     {
+      g_lastCalendarUpdate = now - 840;   // 1 dk sonra tekrar dene, eski liste korunur
+      return;
+     }
+
+//--- Listeyi yeniden kur: CSV olayları + taze takvim olayları
+   NewsEvent merged[];
+   for(int i = 0; i < ArraySize(g_news); i++)
+      if(g_news[i].fromCsv)
+         AddNews(merged, g_news[i].time, g_news[i].currency, g_news[i].importance, g_news[i].title, true);
+   for(int i = 0; i < ArraySize(fresh); i++)
+      AddNews(merged, fresh[i].time, fresh[i].currency, fresh[i].importance, fresh[i].title, false);
+   SortNews(merged);
+
+   ArrayResize(g_news, ArraySize(merged));
+   for(int i = 0; i < ArraySize(merged); i++)
+      g_news[i] = merged[i];
+   g_newsStart = 0;
+  }
+
+//--- Geçmişte kalan olayları atla (zaman sadece ileri gider)
+void PruneNews(const datetime now)
+  {
+   int n = ArraySize(g_news);
+   while(g_newsStart < n && g_news[g_newsStart].time + InpNewsMinutesAfter * 60 < now)
+      g_newsStart++;
+  }
+
+//--- Şu an haber penceresinde miyiz?
+bool IsNewsBlocked(string &reason)
+  {
+   if(!InpUseNewsFilter)
+      return(false);
+   datetime now = TimeCurrent();
+   PruneNews(now);
+   for(int i = g_newsStart; i < ArraySize(g_news); i++)
+     {
+      datetime t = g_news[i].time;
+      if(t - InpNewsMinutesBefore * 60 > now)
+         break;                                 // sıralı liste: sonrakiler daha ileride
+      if(now >= t - InpNewsMinutesBefore * 60 && now <= t + InpNewsMinutesAfter * 60)
+        {
+         reason = StringFormat("Haber: %s %s %s", g_news[i].currency, StringSubstr(g_news[i].title, 0, 22),
+                               TimeToString(t, TIME_MINUTES));
+         return(true);
+        }
+     }
+   return(false);
+  }
+
+//--- Haber öncesi pozisyon kapatma (opsiyonel)
+void CheckNewsClose()
+  {
+   if(!InpUseNewsFilter || !InpNewsClosePositions || CountPositions() == 0)
+      return;
+   datetime now = TimeCurrent();
+   PruneNews(now);
+   for(int i = g_newsStart; i < ArraySize(g_news); i++)
+     {
+      datetime t = g_news[i].time;
+      if(t - now > InpNewsCloseMinutesBefore * 60)
+         break;
+      if(t >= now)
+        {
+         CloseAllPositions("Haber öncesi: " + g_news[i].currency + " " + g_news[i].title);
+         return;
+        }
+     }
+  }
+
+//--- Panel için sıradaki haber metni
+string NextNewsText()
+  {
+   if(!InpUseNewsFilter)
+      return("filtre kapalı");
+   datetime now = TimeCurrent();
+   PruneNews(now);
+   if(g_newsStart >= ArraySize(g_news))
+      return("yakın haber yok");
+   long mins = (long)(g_news[g_newsStart].time - now) / 60;
+   return(StringFormat("%s %s (%I64d dk)", g_news[g_newsStart].currency,
+                       StringSubstr(g_news[g_newsStart].title, 0, 16), mins));
+  }
+
+//====================================================================
 //                         BİLGİ PANELİ
 //====================================================================
 void CreateLabel(const string name, const int x, const int y)
@@ -968,7 +1340,7 @@ void CreatePanel()
    ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, InpPanelX);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, InpPanelY);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 290);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 330);
    ObjectSetInteger(0, bg, OBJPROP_YSIZE, 18 * PANEL_LINES + 10);
    ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'25,30,40');
    ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
@@ -1021,6 +1393,9 @@ void UpdatePanel(const bool force)
    SetLine(7, "Seans      : " + (IsTradingSession() ? "ACIK" : "KAPALI"));
    SetLine(8, "Pozisyon   : " + (string)CountPositions() + " / " + (string)InpMaxPositions);
    SetLine(9, StringFormat("Equity DD  : %.2f%% (max %.1f%%)", dd, InpMaxEquityDDPct), dd > InpMaxEquityDDPct * 0.7 ? clrOrange : clrWhite);
+   string nr = "";
+   bool newsNow = IsNewsBlocked(nr);
+   SetLine(10, "Haber      : " + NextNewsText(), newsNow ? clrOrange : clrWhite);
    ChartRedraw();
   }
 //+------------------------------------------------------------------+

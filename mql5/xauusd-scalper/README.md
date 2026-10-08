@@ -8,7 +8,8 @@ XAUUSD için M1/M5 scalping Expert Advisor. Martingale, grid ve averaging yok. H
 
 1. `XauusdScalperEA.mq5` dosyasını `MQL5/Experts/` klasörüne kopyalayın.
 2. MetaEditor'da açıp **F7** ile derleyin.
-3. XAUUSD grafiğine ekleyin (grafiğin zaman dilimi önemli değil, `InpEntryTF` kullanılır). "Algo Trading" açık olmalı.
+3. Backtest'te haber filtresi kullanmak istiyorsanız `ExportNewsCsv.mq5` dosyasını `MQL5/Scripts/` klasörüne kopyalayıp derleyin ve bir kez çalıştırın. Ayrıntılar aşağıda, [Haber filtresi](#haber-filtresi) bölümünde.
+4. XAUUSD grafiğine ekleyin (grafiğin zaman dilimi önemli değil, `InpEntryTF` kullanılır). "Algo Trading" açık olmalı.
 
 ## Strateji özeti
 
@@ -16,6 +17,7 @@ XAUUSD için M1/M5 scalping Expert Advisor. Martingale, grid ve averaging yok. H
 |---|---|
 | Trend | Trend TF'de (M15) son kapanmış mumda EMA50 > EMA200 ise sadece alış, EMA50 < EMA200 ise sadece satış. İsteğe bağlı olarak kapanış fiyatı da EMA200'ün doğru tarafında olmalı. |
 | Giriş | Giriş TF'de (M5/M1) kapanmış mumlarda EMA9/EMA21 kesişimi. Alışta RSI(7) 50–75 arası, satışta 25–50 arası. |
+| Haber | Seçilen para birimlerindeki önemli haberlerden 30 dk önce ve 30 dk sonra yeni işlem açılmaz. İsterseniz açık pozisyonlar haberden önce kapatılır. |
 | Volatilite | ATR(14) `InpMinATRPips` altındaysa işlem açılmaz. İsteğe bağlı bir üst sınır da var. |
 | SL / TP | SL = ATR × 1.5, TP = SL × 1.5. Broker'ın StopLevel ve FreezeLevel değerleri ile spread hesaba katılır. |
 | Yönetim | Fiyat TP mesafesinin %50'sine gelince SL girişe (+kilit pip) çekilir. Ardından ATR trailing devreye girer. |
@@ -97,18 +99,46 @@ Gün sınırı broker sunucu saatiyle belirlenir. Zirve equity ve acil durum kil
 |---|---|---|
 | InpMaxSpreadPips | 35 | Spread bu değerin üstündeyse işlem açılmaz (0.35$). |
 | InpMaxSlippagePoints | 30 | En fazla kayma (deviation), point cinsinden. |
-| InpBrokerGMTOffset | 2 | Sunucu saatinin GMT'ye farkı. **Yaz/kış saati geçişinde güncelleyin** (genellikle kışın +2, yazın +3). |
+| InpBrokerGMTOffset | 2 | Sunucu saatinin **kış saatindeki** GMT farkı. |
+| InpAutoUSDST | true | ABD yaz saati döneminde (Mart'ın 2. Pazarı – Kasım'ın 1. Pazarı) farka otomatik +1 ekler. Çoğu altın broker'ı kışın GMT+2, yazın GMT+3 kullanır. Broker'ınız sabit saatteyse false yapın. |
 | InpUseLondon, Start/End | true, 07–16 GMT | Londra seansı. |
 | InpUseNewYork, Start/End | true, 12–21 GMT | New York seansı. |
 | InpFridayFilter / InpFridayStopHourGMT | true / 19 | Cuma bu saatten sonra yeni işlem açılmaz. Hafta sonu zaten kapalıdır. |
 | InpCloseBeforeWeekend / InpFridayCloseHourGMT | false / 20 | İsterseniz Cuma bu saatte açık pozisyonları kapatır. |
 
+### Haber filtresi
+| Parametre | Varsayılan | Açıklama |
+|---|---|---|
+| InpUseNewsFilter | true | Haber filtresi açık/kapalı. |
+| InpNewsMinImportance | Sadece yüksek | Hangi önem seviyesindeki haberlerin dikkate alınacağı. |
+| InpNewsCurrencies | USD | Virgülle ayrılmış para birimleri, örneğin `USD,EUR,CNY`. Altını en çok USD haberleri etkiler. |
+| InpNewsMinutesBefore / After | 30 / 30 | Haberden bu kadar dakika önce ve sonra yeni işlem açılmaz. |
+| InpNewsClosePositions | false | Habere `InpNewsCloseMinutesBefore` dakika kala açık pozisyonları kapatır. |
+| InpNewsCloseMinutesBefore | 5 | Kapatmanın habere kaç dakika kala yapılacağı. |
+| InpNewsUseCalendar | true | Canlı ve demo hesapta MT5'in dahili ekonomik takvimini kullanır. Takvim 15 dakikada bir, önceki 1 gün ile sonraki 3 gün için güncellenir. |
+| InpNewsCsvFile | xau_news.csv | Haber CSV dosyası. Boş bırakılırsa CSV kullanılmaz. Canlıda takvimle birlikte kullanılabilir, örneğin takvimde olmayan bir olayı elle eklemek için. |
+| InpNewsCsvCommonFolder | true | CSV ortak klasörde aranır (`Terminal\Common\Files`). Bu klasöre yerel tester ajanları da erişebilir. |
+| InpNewsCsvTimeIsGMT | false | CSV saatleri GMT ise true yapın. Varsayılan sunucu saatidir. |
+
+**Önemli:** MT5'in takvim fonksiyonları (`CalendarValueHistory` vb.) Strategy Tester'da **çalışmaz**. Backtest'te haber filtresinin etkili olması için CSV gerekir:
+
+1. Canlı terminalde (demo hesap yeterli) `ExportNewsCsv` script'ini çalıştırın. Örnek ayarlar: tarih aralığı 2022–2026, para birimi USD, min önem 2.
+2. Script, broker'ın takvim geçmişini sunucu saatiyle `Common\Files\xau_news.csv` dosyasına yazar.
+3. EA bu dosyayı testte otomatik okur. CSV yoksa veya boşsa günlüğe "Haber filtresi bu testte ETKİSİZ" uyarısı yazılır.
+
+CSV formatı (`xau_news_sample.csv` örneğine bakın):
+```
+# time,currency,importance(1-3),title
+2025.01.10 15:30,USD,3,Nonfarm Payrolls
+```
+
 ### Panel
-Panel günlük K/Z, işlem sayısı, art arda zarar, spread, ATR, seans, pozisyon sayısı, equity DD ve durumu (neden işlem açılmadığı) gösterir. Optimizasyon ve görsel olmayan testlerde hız için kapalıdır.
+Panel günlük K/Z, işlem sayısı, art arda zarar, spread, ATR, seans, pozisyon sayısı, equity DD, sıradaki haber ve durumu (neden işlem açılmadığı) gösterir. Optimizasyon ve görsel olmayan testlerde hız için kapalıdır.
 
 ## Backtest ayarları
 
 - **Model:** Every tick based on real ticks. Altın için diğer modeller spread'i ve kaymayı gerçekçi yansıtmaz.
+- **Haber CSV'si:** Testten önce `ExportNewsCsv` ile oluşturun. Filtreyi açık ve kapalı olarak ayrı ayrı test edip farkı görün.
 - **Veri:** İşlem yapacağınız broker'ın kendi tick verisi. En az 2 yıl kullanın, mümkünse 2022–2025 gibi farklı rejimleri içersin.
 - **Gecikme:** "Random delay" veya 50–200 ms sabit gecikme ile de test edin.
 - **Komisyon ve swap:** Hesap tipinizinkiyle aynı olsun. ECN hesapta lot başı komisyon, scalping sonucunu büyük ölçüde değiştirir.
@@ -128,6 +158,7 @@ Az sayıda ve geniş adımlı parametre optimize edin. Parametre sayısı arttı
 | 2 | InpBETriggerPct | 30 – 80 / 10 |
 | 2 | InpTrailATRMult | 0.5 – 2.0 / 0.25 (veya trailing kapalı/açık) |
 | 3 | Seans saatleri | Sadece Londra, sadece NY, ikisi birden |
+| 3 | InpNewsMinutesBefore / After | 15, 30, 60 (sadece birkaç değer) |
 | 3 | InpMaxSpreadPips | Broker'ın tipik spread'inin 1.3–1.8 katı |
 
 **Sabit bırakın:** EMA 9/21/50/200 ve RSI(7) eşiklerini optimize etmeyin. Bunlar stratejinin mantığını tanımlar ve onları sonuca göre ayarlamak overfitting'in en yaygın kaynağıdır. Risk yüzdesi ve günlük limitler optimize edilecek parametreler değil, risk kararlarıdır.
@@ -150,7 +181,8 @@ Az sayıda ve geniş adımlı parametre optimize edin. Parametre sayısı arttı
 
 ## Bilinen sınırlamalar
 
-- GMT farkı manuel girilir. Yaz/kış saati geçişinde güncellenmezse seans saatleri bir saat kayar.
-- Haber filtresi yoktur. NFP, CPI ve FOMC gibi yüksek etkili haberlerde altın sert hareket eder. `InpMaxATRPips` ve spread filtresi kısmi koruma sağlar.
+- Yaz saati otomatiği ABD takvimine göre çalışır. Broker'ınız farklı bir kural uyguluyorsa `InpAutoUSDST=false` yapıp farkı elle güncelleyin.
+- Takvim olmayan beklenmedik haberleri (ör. açıklamalar, jeopolitik gelişmeler) haber filtresi yakalamaz. Bunlar için `InpMaxATRPips` ve spread filtresi kısmi koruma sağlar.
+- Takvimin kaydettiği haber saatleri sonradan değişmiş olabilir. Backtest'teki haber verisi canlıdakiyle birebir aynı olmayabilir.
 - Equity acil durdurma hesabın toplam equity değerine bakar. Aynı hesapta başka EA'lar varsa onların zararları da hesaba katılır.
 - Art arda zarar sayacı her gün sıfırlanır.
