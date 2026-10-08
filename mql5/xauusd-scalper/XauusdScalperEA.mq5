@@ -6,7 +6,7 @@
 //|  Her işlem SL + TP ile birlikte gönderilir.                      |
 //+------------------------------------------------------------------+
 #property copyright "XauusdScalperEA"
-#property version   "1.20"
+#property version   "1.30"
 #property description "XAUUSD M1/M5 scalping EA: M15 EMA50/200 trend filtresi, EMA9/21 kesişimi + RSI(7) onayı,"
 #property description "ATR bazlı SL/TP, breakeven, trailing, risk yüzdesi lot, günlük limitler ve equity acil durdurma."
 
@@ -17,6 +17,13 @@ enum ENUM_LOT_MODE
   {
    LOT_RISK_PERCENT = 0, // Bakiyenin %'si kadar risk
    LOT_FIXED        = 1  // Sabit lot
+  };
+
+//--- Giriş modu
+enum ENUM_ENTRY_MODE
+  {
+   ENTRY_CROSS    = 0, // EMA hızlı/yavaş kesişimi
+   ENTRY_PULLBACK = 1  // Trend yönünde yavaş EMA'ya geri çekilme
   };
 
 //--- Haber önem seviyesi filtresi
@@ -56,6 +63,8 @@ input int              InpTrendSlowEMA          = 200;           // Trend yavaş
 input bool             InpRequirePriceVsSlowEMA = true;          // Fiyat da yavaş EMA'nın doğru tarafında olsun
 
 input group "=== Giriş Sinyali (Giriş TF) ==="
+input ENUM_ENTRY_MODE  InpEntryMode             = ENTRY_CROSS;   // Giriş modu
+input double           InpPullbackATR           = 0.2;           // Pullback: mumun yavaş EMA'ya yaklaşma toleransı (ATR x)
 input int              InpFastEMA               = 9;             // Hızlı EMA
 input int              InpSlowEMA               = 21;            // Yavaş EMA
 input ENUM_APPLIED_PRICE InpAppliedPrice        = PRICE_CLOSE;   // Uygulanan fiyat
@@ -833,9 +842,26 @@ void CheckEntrySignal()
       trendDown = trendDown && (tFast < tFastPrev);
      }
 
-//--- EMA kesişimi
-   bool crossUp   = (f2 <= s2 && f1 > s1);
-   bool crossDown = (f2 >= s2 && f1 < s1);
+   bool crossUp   = false;
+   bool crossDown = false;
+   if(InpEntryMode == ENTRY_CROSS)
+     {
+      //--- EMA kesişimi
+      crossUp   = (f2 <= s2 && f1 > s1);
+      crossDown = (f2 >= s2 && f1 < s1);
+     }
+   else
+     {
+      //--- Pullback: kısa vadeli trend yönünde (EMA hızlı > yavaş), mum yavaş EMA'ya
+      //    kadar geri çekilmiş ve trend yönünde, hızlı EMA'nın ötesinde kapanmış olmalı
+      double o1 = iOpen(_Symbol, InpEntryTF, 1);
+      double h1 = iHigh(_Symbol, InpEntryTF, 1);
+      double l1 = iLow(_Symbol, InpEntryTF, 1);
+      double c1 = iClose(_Symbol, InpEntryTF, 1);
+      double tol = atr * InpPullbackATR;
+      crossUp   = (f1 > s1) && (l1 <= s1 + tol) && (c1 > o1) && (c1 > f1);
+      crossDown = (f1 < s1) && (h1 >= s1 - tol) && (c1 < o1) && (c1 < f1);
+     }
 
 //--- RSI onayı
    bool rsiBuy  = (rsi > InpRSIBuyMin  && rsi < InpRSIBuyMax);

@@ -43,7 +43,9 @@ Digits değeri 3 veya 5 ise pip = point × 10, diğer durumlarda pip = point. XA
 | InpTrendTF | M15 | Trend filtresi zaman dilimi. |
 | InpTrendFastEMA / InpTrendSlowEMA | 50 / 200 | Trend EMA'ları. |
 | InpRequirePriceVsSlowEMA | true | Kapanış fiyatı da EMA200'ün trend yönündeki tarafında olmalı. |
-| InpFastEMA / InpSlowEMA | 9 / 21 | Kesişim EMA'ları. |
+| InpEntryMode | Kesişim | **Kesişim:** EMA9/21 kesişimi. **Pullback:** EMA9 > EMA21 iken mum EMA21'e kadar geri çekilir, trend yönünde ve EMA9'un ötesinde kapanır (satışta tersi). |
+| InpPullbackATR | 0.2 | Pullback modunda mumun EMA21'e "değdi" sayılması için tolerans (ATR × oran). |
+| InpFastEMA / InpSlowEMA | 9 / 21 | Kesişim ve pullback EMA'ları. |
 | InpAppliedPrice | Close | EMA ve RSI'ın hesaplandığı fiyat. |
 | InpRSIPeriod | 7 | RSI periyodu. |
 | InpRSIBuyMin / InpRSIBuyMax | 50 / 75 | Alış için RSI aralığı. |
@@ -144,6 +146,10 @@ CSV formatı (`xau_news_sample.csv` örneğine bakın):
 
 ### Panel
 Panel günlük K/Z, işlem sayısı, art arda zarar, spread, ATR, seans, pozisyon sayısı, equity DD, sıradaki haber ve durumu (neden işlem açılmadığı) gösterir. Optimizasyon ve görsel olmayan testlerde hız için kapalıdır.
+
+## Araştırma için mum verisi
+
+`ExportBarsCsv.mq5` script'i, grafiğin sembolüne ait mum verisini (OHLC, tick hacmi, spread) `Common\Files\<sembol>_<TF>.csv` dosyasına yazar. Bu dosya, stratejiyi MT5 dışında, örneğin Python ile, hızlıca analiz etmek için kullanılır. Script'i `MQL5/Scripts/` klasörüne koyup derleyin ve XAUUSD grafiğinde çalıştırın. Çalıştırmadan önce grafikte geçmişi geriye kaydırıp yeterli veri yükleyin.
 
 ## Backtest ayarları
 
