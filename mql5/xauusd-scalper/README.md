@@ -71,6 +71,19 @@ Digits değeri 3 veya 5 ise pip = point × 10, diğer durumlarda pip = point. XA
 | InpMinSLPips | 50 | SL en az bu kadar olur. Çok dar SL'nin spread yüzünden tetiklenmesini önler. |
 | InpMaxSLPips | 0 | SL bu değeri aşarsa işlem atlanır. 0 = kapalı. |
 
+### Kademeli kâr alma
+| Parametre | Varsayılan | Açıklama |
+|---|---|---|
+| InpUsePartialTP | true | Kademeli kâr alma açık/kapalı. |
+| InpPartialTriggerR | 1.0 | Kâr ilk risk mesafesinin (R) bu katına ulaşınca pozisyonun bir kısmı kapatılır. |
+| InpPartialClosePct | 50 | Kapatılacak lot yüzdesi. Lot adımına göre aşağı yuvarlanır. |
+| InpPartialMoveSLToBE | true | Kısmi kapatmadan sonra kalan kısmın SL'si girişe (+`InpBELockPips`) çekilir. Böylece işlemin geri kalanı zararla kapanamaz. |
+| InpPartialFinalRR | 2.0 | Kalan kısmın TP'si (R). Bu özellik açıkken `InpRiskReward` yerine kullanılır. |
+
+Örnek: SL 7 $, 0,04 lot. Fiyat 7 $ kâra geldiğinde 0,02 lot kapatılır (+14 $) ve SL girişe çekilir. Kalan 0,02 lot ya 14 $'lık TP'ye ulaşır (+28 $), ya da girişte kapanır (≈0 $). Toplam risk değişmez.
+
+**Not:** Lot, broker'ın min lotunun iki katından küçükse (örneğin 0,01) bölünemez. EA bunu günlüğe yazar ve pozisyonu bütün olarak yönetir. Küçük hesaplarda risk %0,5 iken çoğu işlem 0,01–0,03 lot olduğu için bu özellik bazı işlemlerde devreye girmez.
+
 ### Breakeven ve trailing
 | Parametre | Varsayılan | Açıklama |
 |---|---|---|

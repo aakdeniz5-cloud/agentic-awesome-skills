@@ -6,7 +6,7 @@
 //|  Her işlem SL + TP ile birlikte gönderilir.                      |
 //+------------------------------------------------------------------+
 #property copyright "XauusdScalperEA"
-#property version   "1.30"
+#property version   "1.40"
 #property description "XAUUSD M1/M5 scalping EA: M15 EMA50/200 trend filtresi, EMA9/21 kesişimi + RSI(7) onayı,"
 #property description "ATR bazlı SL/TP, breakeven, trailing, risk yüzdesi lot, günlük limitler ve equity acil durdurma."
 
@@ -93,6 +93,13 @@ input double           InpSLATRMult             = 1.5;           // SL = ATR x �
 input double           InpRiskReward            = 1.5;           // TP = SL x Risk/Ödül
 input double           InpMinSLPips             = 50.0;          // Minimum SL mesafesi (pip)
 input double           InpMaxSLPips             = 0.0;           // Maksimum SL (pip) - aşarsa işlem yok (0 = kapalı)
+
+input group "=== Kademeli Kâr Alma ==="
+input bool             InpUsePartialTP          = true;          // Kademeli kâr alma aktif
+input double           InpPartialTriggerR       = 1.0;           // Kâr bu kadar R olunca kısmi kapat
+input double           InpPartialClosePct       = 50.0;          // Kapatılacak lot yüzdesi
+input bool             InpPartialMoveSLToBE     = true;          // Kısmi kapatmadan sonra SL girişe (+kilit)
+input double           InpPartialFinalRR        = 2.0;           // Kalan kısmın TP'si (R). Aktifken InpRiskReward yerine kullanılır
 
 input group "=== Breakeven ==="
 input bool             InpUseBreakeven          = true;          // Breakeven aktif
@@ -221,6 +228,9 @@ int OnInit()
      { Print("[HATA] Risk yüzdesi 0 ile 5 arasında olmalı."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpLotMode == LOT_FIXED && InpFixedLot <= 0)
      { Print("[HATA] Sabit lot > 0 olmalı."); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpUsePartialTP && (InpPartialTriggerR <= 0 || InpPartialClosePct <= 0 || InpPartialClosePct >= 100 ||
+                          InpPartialFinalRR <= InpPartialTriggerR))
+     { Print("[HATA] Kademeli kâr: tetik > 0, yüzde 1-99 arası ve son TP (R) > tetik (R) olmalı."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpMaxPositions < 1)
      { Print("[HATA] Max pozisyon en az 1 olmalı."); return(INIT_PARAMETERS_INCORRECT); }
 
@@ -273,6 +283,7 @@ int OnInit()
       GlobalVariableDel(g_gvPeak);
       GlobalVariableDel(g_gvEmergency);
      }
+   CleanupPartialFlags();
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_peakEquity = GlobalVariableCheck(g_gvPeak) ? GlobalVariableGet(g_gvPeak) : equity;
@@ -631,6 +642,7 @@ void CheckNewDay()
    g_statsDirty = false;
 //--- Gün başı bakiye: mevcut bakiye - bugün gerçekleşen kâr/zarar
    g_dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE) - g_realizedToday;
+   CleanupPartialFlags();
    PrintFormat("[BİLGİ] Yeni gün: %s  Gün başı bakiye=%.2f", TimeToString(today, TIME_DATE), g_dayStartBalance);
   }
 
@@ -979,7 +991,7 @@ void OpenTrade(const ENUM_ORDER_TYPE type, const double atr)
       return;
      }
 
-   double tpDist = slDist * InpRiskReward;
+   double tpDist = slDist * TargetRR();
    if(tpDist < brokerMin)
       tpDist = brokerMin;
 
@@ -1017,11 +1029,76 @@ void OpenTrade(const ENUM_ORDER_TYPE type, const double atr)
   }
 
 //====================================================================
+//                         KADEMELİ KÂR ALMA
+//  Kısmi kapatılan pozisyonlar terminal global değişkeniyle işaretlenir;
+//  EA yeniden başlasa da aynı pozisyon ikinci kez kısmi kapatılmaz.
+//====================================================================
+//--- Açılışta kullanılacak TP oranı (R)
+double TargetRR()
+  {
+   return(InpUsePartialTP ? InpPartialFinalRR : InpRiskReward);
+  }
+
+string PartialKey(const ulong ticket)
+  {
+   return(PANEL_PREFIX + "PT_" + (string)ticket);
+  }
+
+bool PartialDone(const ulong ticket)
+  {
+   return(GlobalVariableCheck(PartialKey(ticket)));
+  }
+
+void MarkPartialDone(const ulong ticket)
+  {
+   GlobalVariableSet(PartialKey(ticket), 1.0);
+  }
+
+//--- Artık açık olmayan pozisyonların işaretlerini sil
+void CleanupPartialFlags()
+  {
+   string prefix = PANEL_PREFIX + "PT_";
+   for(int i = GlobalVariablesTotal() - 1; i >= 0; i--)
+     {
+      string name = GlobalVariableName(i);
+      if(StringFind(name, prefix) != 0)
+         continue;
+      ulong ticket = (ulong)StringToInteger(StringSubstr(name, StringLen(prefix)));
+      if(!PositionSelectByTicket(ticket))
+         GlobalVariableDel(name);
+     }
+  }
+
+//--- Pozisyonun InpPartialClosePct kadarını kapat
+bool DoPartialClose(const ulong ticket, const double volume)
+  {
+   double minLot   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double closeVol = NormalizeLot(volume * InpPartialClosePct / 100.0);
+   if(closeVol < minLot || volume - closeVol < minLot - 1e-9)
+     {
+      PrintFormat("[BİLGİ] #%I64u lot (%.2f) kısmi kapatma için çok küçük (min lot %.2f). Pozisyon bütün olarak yönetilecek.",
+                  ticket, volume, minLot);
+      MarkPartialDone(ticket);
+      return(false);
+     }
+   ResetLastError();
+   if(!trade.PositionClosePartial(ticket, closeVol, InpMaxSlippagePoints) || !TradeSucceeded())
+     {
+      LogTradeError(StringFormat("Kısmi kapatma #%I64u (%.2f lot)", ticket, closeVol));
+      return(false);
+     }
+   MarkPartialDone(ticket);
+   PrintFormat("[YÖNETİM] #%I64u kısmi kâr alındı: %.2f / %.2f lot kapatıldı.", ticket, closeVol, volume);
+   g_statsDirty = true;
+   return(true);
+  }
+
+//====================================================================
 //                    POZİSYON YÖNETİMİ (BE / TRAILING)
 //====================================================================
 void ManagePositions()
   {
-   if(!InpUseBreakeven && !InpUseTrailing)
+   if(!InpUseBreakeven && !InpUseTrailing && !InpUsePartialTP)
       return;
    if(CountPositions() == 0)
       return;
@@ -1046,6 +1123,7 @@ void ManagePositions()
       double open  = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl    = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
+      double vol   = PositionGetDouble(POSITION_VOLUME);
       double newSL = sl;
 
       if(type == POSITION_TYPE_BUY)
@@ -1053,16 +1131,22 @@ void ManagePositions()
          double profitDist = bid - open;
          double tpDist     = (tp > 0.0) ? tp - open : 0.0;
          bool   beDone     = (sl > 0.0 && sl >= open);
+         double riskDist   = (tpDist > 0.0) ? tpDist / TargetRR() : 0.0;
+
+         //--- Kademeli kâr: InpPartialTriggerR'de lotun bir kısmını kapat
+         bool forceBE = false;
+         if(InpUsePartialTP && riskDist > 0.0 && profitDist >= riskDist * InpPartialTriggerR && !PartialDone(ticket) &&
+            (sl == 0.0 || bid - sl > freeze) && (tp == 0.0 || tp - bid > freeze))
+            forceBE = DoPartialClose(ticket, vol) && InpPartialMoveSLToBE;
 
          //--- Breakeven: TP mesafesinin X%'ine ulaşınca SL girişe (+kilit)
-         if(InpUseBreakeven && !beDone && tpDist > 0.0 && profitDist >= tpDist * InpBETriggerPct / 100.0)
+         if(!beDone && ((InpUseBreakeven && tpDist > 0.0 && profitDist >= tpDist * InpBETriggerPct / 100.0) || forceBE))
            {
             double be = open + InpBELockPips * g_pip;
             if(sl == 0.0 || be > newSL)
                newSL = be;
            }
          //--- ATR trailing: kâr InpTrailStartR x ilk risk olduktan sonra (ilk risk = TP mesafesi / R:Ö)
-         double riskDist = (tpDist > 0.0 && InpRiskReward > 0.0) ? tpDist / InpRiskReward : 0.0;
          bool   trailOK  = (InpTrailStartR <= 0.0) || (riskDist > 0.0 && profitDist >= riskDist * InpTrailStartR);
          if(InpUseTrailing && trailOK && haveATR && atr > 0.0 && (!InpTrailAfterBEOnly || (newSL > 0.0 && newSL >= open)))
            {
@@ -1086,14 +1170,19 @@ void ManagePositions()
          double profitDist = open - ask;
          double tpDist     = (tp > 0.0) ? open - tp : 0.0;
          bool   beDone     = (sl > 0.0 && sl <= open);
+         double riskDist   = (tpDist > 0.0) ? tpDist / TargetRR() : 0.0;
 
-         if(InpUseBreakeven && !beDone && tpDist > 0.0 && profitDist >= tpDist * InpBETriggerPct / 100.0)
+         bool forceBE = false;
+         if(InpUsePartialTP && riskDist > 0.0 && profitDist >= riskDist * InpPartialTriggerR && !PartialDone(ticket) &&
+            (sl == 0.0 || sl - ask > freeze) && (tp == 0.0 || ask - tp > freeze))
+            forceBE = DoPartialClose(ticket, vol) && InpPartialMoveSLToBE;
+
+         if(!beDone && ((InpUseBreakeven && tpDist > 0.0 && profitDist >= tpDist * InpBETriggerPct / 100.0) || forceBE))
            {
             double be = open - InpBELockPips * g_pip;
             if(sl == 0.0 || be < newSL)
                newSL = be;
            }
-         double riskDist = (tpDist > 0.0 && InpRiskReward > 0.0) ? tpDist / InpRiskReward : 0.0;
          bool   trailOK  = (InpTrailStartR <= 0.0) || (riskDist > 0.0 && profitDist >= riskDist * InpTrailStartR);
          if(InpUseTrailing && trailOK && haveATR && atr > 0.0 && (!InpTrailAfterBEOnly || (newSL > 0.0 && newSL <= open)))
            {
