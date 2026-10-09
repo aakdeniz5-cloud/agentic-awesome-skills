@@ -446,9 +446,23 @@ void UpdateLiveStats()
       }
    }
    datetime now=TimeCurrent();
-   if(g_lastTickTime==0 || now-g_lastTickTime>30*60)
+   if(g_lastTickTime==0)
+      g_sessionOpen=SessionOpenFromHistory(); // düzeltme: EA eklenmesi "açılış" sayılmaz
+   else if(now-g_lastTickTime>30*60)
       g_sessionOpen=now;                    // hafta açılışı veya günlük ara sonrası
    g_lastTickTime=now;
+}
+
+//--- EA yüklendiğinde: son M1 mumlarında 30 dk+ boşluk varsa (açılış / günlük ara)
+//    açılış zamanını oradan al. Boşluk yoksa piyasa zaten açıktır, engel yok.
+datetime SessionOpenFromHistory()
+{
+   datetime tm[];
+   int n=CopyTime(_Symbol,PERIOD_M1,0,MathMax(2,SessionOpenSkipMinutes+2),tm);  // eskiden yeniye
+   if(n<2) return 0;
+   for(int i=n-1;i>=1;i--)
+      if(tm[i]-tm[i-1]>30*60) return tm[i];
+   return 0;
 }
 
 //--- Toplam lot (açık + bekleyen + yeni) sınırı ve marj seviyesi
