@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.80 LIVE
+# ASLAN Vur-Kaç M5 v2.81 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -75,6 +75,25 @@ Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kaz
 | D | −2.197 $ | 0,81 | 7.781 | %22,3 | Orijinal v2.63 yerine v2.71 + v2.63 seti çalıştırıldı |
 
 Bu testlerde stop emirleri istenen fiyattan ortalama yaklaşık 10 point kötü doldu. v2.71'de tek bir Stop Limit reddi, EA'yı test boyunca kalıcı olarak normal Stop'a döndürüyordu. **v2.72'de ret yalnızca o emri etkiler.** Ret sebebi (retcode, fiyatlar) Journal'a yazılır ve `ASLAN EXEC SUMMARY` satırında kabul edilen ve reddedilen Stop Limit sayıları görünür.
+
+### v2.81: hedge kilidi (kullanıcı isteği)
+
+Kullanıcı, zarardaki pozisyonun SL ile kapanması yerine ters yönde hedge açılmasını istedi.
+
+| Ayar | Varsayılan | Açıklama |
+|---|---|---|
+| UseHedgeLock | true | Pozisyon normal SL mesafesi kadar zarara girince aynı lotta ters yönde hedge açılır. |
+| HedgeHardSLMultiplier | 3.0 | Her bacağın sunucuda duran "felaket SL"si = normal SL × 3. |
+| HedgeMaxLocks | 2 | Aynı anda en fazla 2 kilit. |
+| HedgeCloseOrphan | true | Orijinal pozisyon kapanırsa hedge bacağı da kapatılır. |
+
+- **Kilidin açılması:** Fiyat orijinal girişe dönünce hedge kapatılır, orijinal pozisyon devam eder. Her pozisyon yalnızca bir kez hedge edilir.
+- **Kilitli bacaklar:** Başa baş, recovery ve trailing kilitli bacaklara uygulanmaz.
+- **Diğer kurallar:** Kilitli sepet net zararda olduğu için `NoAddWhileBasketLoss` yeni girişleri engeller. `CloseOppositeOnSwitch` hedge modunda devre dışıdır. Rollover kapanışı ve günlük zarar sınırı geçerlidir.
+- **Hesap türü:** Hedge sadece hedging hesapta çalışır; netting hesapta otomatik olarak devre dışı kalır.
+- **Önemli:** Kilit zararı dondurur, yok etmez. Fiyat girişe döndüğünde hedge bacağı, orijinalin kurtardığı kadar zararla kapanır.
+
+Setler: `ASLAN_FUSION_v281_canli_001lot_hedge.set`, `ASLAN_O_v281_001lot_hedge_TESTER.set`
 
 ### v2.80: biriktirme koruması
 
