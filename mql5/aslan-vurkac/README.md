@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.75 LIVE
+# ASLAN Vur-Kaç M5 v2.80 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -75,6 +75,22 @@ Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kaz
 | D | −2.197 $ | 0,81 | 7.781 | %22,3 | Orijinal v2.63 yerine v2.71 + v2.63 seti çalıştırıldı |
 
 Bu testlerde stop emirleri istenen fiyattan ortalama yaklaşık 10 point kötü doldu. v2.71'de tek bir Stop Limit reddi, EA'yı test boyunca kalıcı olarak normal Stop'a döndürüyordu. **v2.72'de ret yalnızca o emri etkiler.** Ret sebebi (retcode, fiyatlar) Journal'a yazılır ve `ASLAN EXEC SUMMARY` satırında kabul edilen ve reddedilen Stop Limit sayıları görünür.
+
+### v2.80: biriktirme koruması
+
+Fusion canlı hesapta görülen davranış: fiyat yükselirken 4 alış pozisyonu üst üste açıldı (4182,00 → 4182,47), fiyat dönünce hepsi birlikte zarara geçti. Ayrıca karışık sepette, ters yöndeki pozisyonlar zarardayken yeni pozisyon eklendi.
+
+| Ayar | Varsayılan | Açıklama |
+|---|---|---|
+| NoAddWhileBasketLoss | true | Sepet net zarardayken yeni pozisyon açılmaz. Sunucudaki bekleyen emirler de silinir, çünkü koşul bozulsa da tetiklenebilirler. |
+| MaxPositionsPerSide | 2 | Aynı yönde en fazla 2 açık pozisyon. Dolan yönün bekleyen emirleri silinir. |
+| CloseOppositeOnSwitch | true | Yön değişince ters yöndeki pozisyonlar kapatılır. Zarardaki pozisyonlar taşınarak üstüne ekleme yapılmaz. |
+
+Dosya adı v2.80, çünkü kullanıcının bilgisayarında v276–v278 adlı başka dosyalar var.
+
+Setler:
+- `ASLAN_FUSION_v280_canli_001lot.set`: Fusion canlı hesap için
+- `ASLAN_J_v280_tester.set`: tester için
 
 ### v2.75: gecikme (latency) koruması
 
