@@ -1,0 +1,8 @@
+# XauusdScalperEA haber CSV formati (Strategy Tester icin)
+# Satir: YYYY.MM.DD HH:MM,PARA_BIRIMI,ONEM(1-3),Baslik
+# '#' ile baslayan satirlar yok sayilir. Saatler varsayilan olarak broker SUNUCU saatidir.
+# GMT saat kullaniyorsaniz EA'da InpNewsCsvTimeIsGMT=true yapin.
+# Gercek veriyi ExportNewsCsv.mq5 script'i ile kendi broker'inizin takviminden uretin.
+# Ornek satirlar (tarihler yalnizca format ornegidir, gercek veri degildir):
+# 2025.01.10 15:30,USD,3,Nonfarm Payrolls
+# 2025.01.15 15:30,USD,3,CPI m/m
