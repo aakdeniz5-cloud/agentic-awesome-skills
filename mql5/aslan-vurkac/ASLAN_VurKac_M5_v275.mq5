@@ -4,8 +4,8 @@
 //| This is a reconstruction, NOT the original proprietary source.  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.74"
-#property description "ASLAN Vur-Kac M5 v2.74 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
+#property version "2.75"
+#property description "ASLAN Vur-Kac M5 v2.75 LIVE - grid + basket trailing, live-account protections (spread, rollover, news, commission, margin, execution log)"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -154,6 +154,18 @@ input int    SlippageWindow           = 20;     // Son kaç girişin kayması iz
 input double MaxAvgSlippagePoints     = 5.0;    // Ortalama kayma bunu aşarsa yeni emir durdurulur (point)
 input int    SlippagePauseMinutes     = 30;     // Durdurma süresi (dakika)
 
+input group "GECIKME (v2.75)"
+// Canlı hesapta her istek sunucuya gidip gelir (gecikme). v2.75:
+//  - basket kapatma ve bekleyen emir silme tüm emirlere AYNI ANDA (async) gönderilir
+//  - aynı pozisyona kısa sürede tekrar SL değişikliği gönderilmez (istek seli yok)
+//  - bağlantı gecikmesi (ping) yüksekse yeni emir konmaz
+//  - ölçülen istek süresi ekranda ve özette gösterilir
+input bool   UseAsyncBatch            = true;   // Toplu kapatma/silme isteklerini paralel gönder
+input int    ResendAfterMs            = 1500;   // Aynı kapatma/silme isteğini bu süreden önce tekrar gönderme (ms)
+input int    ModifyMinIntervalMs      = 1000;   // Aynı pozisyona iki SL değişikliği arası en az süre (ms)
+input bool   UseLatencyGuard          = true;   // Ping yüksekse yeni emir koyma (sadece canlı/demo)
+input double MaxPingMs                = 150.0;  // En yüksek kabul edilen ping (ms)
+
 input group "STOP LIMIT (v2.71)"
 // v2.70 testinde stop emirleri istenen fiyattan ortalama 10 point kötü doldu.
 // Stop Limit: fiyat stop seviyesine gelince stop fiyatında (veya daha iyisinde)
@@ -213,6 +225,12 @@ double   g_slipRing[];          // v2.74: son girişlerin kayması
 int      g_slipRingPos  = 0;
 datetime g_slipPauseUntil = 0;
 datetime g_lastSyncTime = 0;
+ulong    g_reqTicket[];          // v2.75: async kapatma/silme gönderim zamanları
+ulong    g_reqMs[];
+ulong    g_modTicket[];          // v2.75: SL değişikliği gönderim zamanları
+ulong    g_modMs[];
+double   g_latSum = 0.0, g_latMax = 0.0;
+int      g_latN   = 0;
 int      g_slPlaced     = 0;   // v2.72: kabul edilen stop limit emri
 int      g_slRejected   = 0;   // v2.72: reddedilip o emir için normal stop'a dönülen
 ulong    g_limTicket[];        // tetiklenmiş (limit'e dönmüş) emirler
@@ -373,9 +391,12 @@ void ManageRecoveryBreakEven()
       }
       else continue;
 
+      if(!CanModify(ticket)) continue;            // v2.75: istek seli yok
       trade.SetExpertMagicNumber(MagicNumber);
       ResetLastError();
+      ulong t0=GetMicrosecondCount();
       bool ok=trade.PositionModify(ticket,newSL,PositionGetDouble(POSITION_TP));
+      RecordLatency(t0);
       uint rc=trade.ResultRetcode();
 
       if(ok && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_DONE_PARTIAL || rc==TRADE_RETCODE_PLACED))
@@ -542,6 +563,8 @@ void EvaluateLiveBlock()
    datetime now=TimeCurrent();
    if(why=="" && !InTradingHours())
       why="islem saati disi";
+   if(why=="" && UseLatencyGuard && !MQLInfoInteger(MQL_TESTER) && PingMs()>MaxPingMs)
+      why=StringFormat("gecikme yuksek (ping %.0f ms)",PingMs());
    if(why=="" && UseSlippageGuard && TimeCurrent()<g_slipPauseUntil)
       why="kayma korumasi ("+TimeToString(g_slipPauseUntil,TIME_MINUTES)+"'e kadar)";
    if(why=="" && UseRolloverFilter)
@@ -669,8 +692,12 @@ void ManageLegBreakEven()
       if(newSL<=0.0) continue;
       newSL=NormalizePrice(newSL);
       if(!IsLockStopValid(type,newSL,t,minDist)) continue;
+      if(!CanModify(ticket)) continue;            // v2.75
       trade.SetExpertMagicNumber(MagicNumber);
-      if(trade.PositionModify(ticket,newSL,PositionGetDouble(POSITION_TP)))
+      ulong t0=GetMicrosecondCount();
+      bool okBE=trade.PositionModify(ticket,newSL,PositionGetDouble(POSITION_TP));
+      RecordLatency(t0);
+      if(okBE)
          Print("ASLAN LEG BE | ticket=",ticket," | SL=",DoubleToString(newSL,_Digits));
    }
 }
@@ -750,11 +777,64 @@ void SyncBasketStops(double protectedNet)
       bool better=(type==POSITION_TYPE_BUY ? (oldSL<=0.0 || stop>=oldSL+step)
                                            : (oldSL<=0.0 || stop<=oldSL-step));
       if(!better) continue;
+      if(!CanModify(tk)) continue;                // v2.75
       trade.SetExpertMagicNumber(MagicNumber);
-      if(trade.PositionModify(tk,stop,PositionGetDouble(POSITION_TP)))
+      ulong t0=GetMicrosecondCount();
+      bool okSync=trade.PositionModify(tk,stop,PositionGetDouble(POSITION_TP));
+      RecordLatency(t0);
+      if(okSync)
          Print("ASLAN BASKET SL SYNC | ticket=",tk," | SL=",DoubleToString(stop,_Digits),
                " | korunan net=",DoubleToString(protectedNet,2));
    }
+}
+
+
+//======================== v2.75 GECIKME ============================
+//--- Zaman (ms): tick zamanı kullanılır; tester'da simüle zamanla da doğru çalışır
+ulong NowMs()
+{
+   MqlTick t;
+   if(SymbolInfoTick(_Symbol,t) && t.time_msc>0) return (ulong)t.time_msc;
+   return (ulong)TimeCurrent()*1000;
+}
+
+//--- ticket için son gönderimden bu yana windowMs geçti mi? Geçtiyse zamanı kaydet, true döndür
+bool ThrottlePass(ulong &tk[],ulong &ms[],ulong ticket,int windowMs)
+{
+   ulong now=NowMs();
+   int n=ArraySize(tk);
+   for(int i=0;i<n;i++)
+   {
+      if(tk[i]!=ticket) continue;
+      if(now-ms[i]<(ulong)MathMax(0,windowMs)) return false;
+      ms[i]=now;
+      return true;
+   }
+   if(n>=500){ ArrayResize(tk,0); ArrayResize(ms,0); n=0; }   // eski kayıtları temizle
+   ArrayResize(tk,n+1);
+   ArrayResize(ms,n+1);
+   tk[n]=ticket;
+   ms[n]=now;
+   return true;
+}
+
+bool CanModify(ulong ticket)
+{
+   return ThrottlePass(g_modTicket,g_modMs,ticket,ModifyMinIntervalMs);
+}
+
+//--- Senkron isteğin gidiş-dönüş süresini kaydet (ms)
+void RecordLatency(ulong startUs)
+{
+   double ms=(double)(GetMicrosecondCount()-startUs)/1000.0;
+   g_latSum+=ms;
+   g_latN++;
+   if(ms>g_latMax) g_latMax=ms;
+}
+
+double PingMs()
+{
+   return (double)TerminalInfoInteger(TERMINAL_PING_LAST)/1000.0;
 }
 
 //------------------------ helpers ----------------------------------
@@ -872,22 +952,24 @@ double TodayNet()
 
 void DeleteOurPending()
 {
+   // v2.75: tüm silme istekleri beklemeden, aynı anda gönderilir
+   trade.SetExpertMagicNumber(MagicNumber);
+   if(UseAsyncBatch) trade.SetAsyncMode(true);
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong t=OrderGetTicket(i);
-      if(IsOurOrder(t))
-         trade.OrderDelete(t);
+      if(!IsOurOrder(t)) continue;
+      if(UseAsyncBatch && !ThrottlePass(g_reqTicket,g_reqMs,t,ResendAfterMs)) continue;
+      ulong t0=GetMicrosecondCount();
+      trade.OrderDelete(t);
+      if(!UseAsyncBatch) RecordLatency(t0);
    }
+   if(UseAsyncBatch) trade.SetAsyncMode(false);
 }
 
 void CloseOurPositions()
 {
-   for(int i=PositionsTotal()-1;i>=0;i--)
-   {
-      ulong t=PositionGetTicket(i);
-      if(IsOurPosition(t))
-         trade.PositionClose(t);
-   }
+   CloseBasketPositionsOnly();
 }
 
 void EndCycle()
@@ -1394,6 +1476,7 @@ void ApplyInitialSLToPositions()
       }
       sl=NormalizePrice(sl);
 
+      if(!CanModify(ticket)) continue;            // v2.75
       trade.SetExpertMagicNumber(MagicNumber);
       if(!trade.PositionModify(ticket,sl,PositionGetDouble(POSITION_TP)))
          Print("ASLAN INITIAL SL FAILED | ticket=",ticket," | ",trade.ResultRetcode()," | ",trade.ResultRetcodeDescription());
@@ -1497,9 +1580,12 @@ void ManageTrailing()
       else continue;
 
       if(!IsLockStopValid(type,newSL,t,minDist)) continue;
+      if(!CanModify(ticket)) continue;            // v2.75: istek seli yok
       trade.SetExpertMagicNumber(MagicNumber);
       ResetLastError();
+      ulong t0=GetMicrosecondCount();
       bool ok=trade.PositionModify(ticket,newSL,PositionGetDouble(POSITION_TP));
+      RecordLatency(t0);
       uint rc=trade.ResultRetcode();
       if(ok && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_DONE_PARTIAL || rc==TRADE_RETCODE_PLACED))
       {
@@ -1579,19 +1665,26 @@ double CommonStopForBasketNetLock(ENUM_POSITION_TYPE type,double targetNet,const
 
 void CloseBasketPositionsOnly()
 {
+   // v2.75: sepetteki tüm kapatma istekleri aynı anda gönderilir; sıralı gönderimde
+   // her pozisyon bir öncekinin cevabını bekler ve son pozisyon geç/kayarak kapanır.
+   trade.SetExpertMagicNumber(MagicNumber);
+   if(UseAsyncBatch) trade.SetAsyncMode(true);
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong ticket=PositionGetTicket(i);
       if(!IsOurPosition(ticket)) continue;
-      trade.SetExpertMagicNumber(MagicNumber);
+      if(UseAsyncBatch && !ThrottlePass(g_reqTicket,g_reqMs,ticket,ResendAfterMs)) continue;
       ResetLastError();
-      bool ok=trade.PositionClose(ticket);
+      ulong t0=GetMicrosecondCount();
+      bool ok=trade.PositionClose(ticket,SlippagePoints);
+      if(!UseAsyncBatch) RecordLatency(t0);
       uint rc=trade.ResultRetcode();
       if(!ok || (rc!=TRADE_RETCODE_DONE && rc!=TRADE_RETCODE_DONE_PARTIAL && rc!=TRADE_RETCODE_PLACED))
          Print("ASLAN BASKET CLOSE RETRY | ticket=",ticket," | retcode=",rc," | ",trade.ResultRetcodeDescription());
       else
-         Print("ASLAN BASKET CLOSE OK | ticket=",ticket);
+         Print("ASLAN BASKET CLOSE ",(UseAsyncBatch?"SENT":"OK")," | ticket=",ticket);
    }
+   if(UseAsyncBatch) trade.SetAsyncMode(false);
 }
 
 void ManageCommonBasketTrail()
@@ -1738,7 +1831,7 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   Print("ASLAN v2.74 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
+   Print("ASLAN v2.75 INIT | ",_Symbol," | Magic=",MagicNumber," | Chart=",EnumToString((ENUM_TIMEFRAMES)_Period));
    UpdateMemo();
    return INIT_SUCCEEDED;
 }
@@ -1792,7 +1885,7 @@ void UpdateMemo()
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double lot=AutoBalanceLot();
    string tf=(_Period==PERIOD_M5 ? "M5 OK" : "USE M5");
-   Comment("ASLAN VUR-KAC v2.74 LIVE\n",
+   Comment("ASLAN VUR-KAC v2.75 LIVE\n",
            "Recommended: XAUUSD M5 | ",tf,"\n",
            "Balance: ",DoubleToString(balance,2),
            " | Equity: ",DoubleToString(equity,2),"\n",
@@ -1811,6 +1904,8 @@ void UpdateMemo()
            " | StopLimit: ",(StopLimitAvailable()?"ON":"OFF")," missed=",IntegerToString(g_missedFills),"\n",
            "Live block: ",(g_blocked?g_blockReason:"yok"),
            " | Gun zirve: ",DoubleToString(g_dayPeak,2),
+           StringFormat("\nPing: %.0f ms | Istek suresi ort/max: %.0f/%.0f ms",PingMs(),
+                        (g_latN>0?g_latSum/g_latN:0.0),g_latMax),
            " | Koruma: SL+BE",(LegBreakEvenPoints>0?"":"(kapali)"),"+Basket",(UseBasketStopSync?"+SLsync":""));
 }
 
@@ -1863,8 +1958,10 @@ void OnDeinit(const int reason)
          " | stopLimitPlaced=",IntegerToString(g_slPlaced),
          " | stopLimitRejected=",IntegerToString(g_slRejected),
          " | stopLimitMissed=",IntegerToString(g_missedFills),
-         " | avgSpread=",DoubleToString(g_avgSpread/PT(),1)," point");
+         " | avgSpread=",DoubleToString(g_avgSpread/PT(),1)," point",
+         " | reqLatencyAvg=",DoubleToString(g_latN>0?g_latSum/g_latN:0.0,1)," ms",
+         " | reqLatencyMax=",DoubleToString(g_latMax,1)," ms");
    Comment("");
-   Print("ASLAN v2.74 DEINIT | reason=",reason);
+   Print("ASLAN v2.75 DEINIT | reason=",reason);
 }
 //+------------------------------------------------------------------+

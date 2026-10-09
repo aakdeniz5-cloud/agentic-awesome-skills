@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.74 LIVE
+# ASLAN Vur-Kaç M5 v2.75 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -76,6 +76,21 @@ Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kaz
 
 Bu testlerde stop emirleri istenen fiyattan ortalama yaklaşık 10 point kötü doldu. v2.71'de tek bir Stop Limit reddi, EA'yı test boyunca kalıcı olarak normal Stop'a döndürüyordu. **v2.72'de ret yalnızca o emri etkiler.** Ret sebebi (retcode, fiyatlar) Journal'a yazılır ve `ASLAN EXEC SUMMARY` satırında kabul edilen ve reddedilen Stop Limit sayıları görünür.
 
+### v2.75: gecikme (latency) koruması
+
+Canlı hesapta her istek sunucuya gidip gelir. EC Markets yöneticisinin 6. maddesi bu gecikmeyle ilgiliydi. v2.75'teki değişiklikler:
+
+| Sorun | v2.75 çözümü |
+|---|---|
+| Basket kapatılırken pozisyonlar sırayla kapatılıyordu. Her istek bir öncekinin cevabını beklediği için 12 pozisyonda, 100 ms gecikmeyle, son pozisyon ~1,2 sn geç ve kayarak kapanıyordu. | Kapatma ve bekleyen emir silme istekleri **aynı anda (async)** gönderilir (`UseAsyncBatch`). Aynı istek `ResendAfterMs` süresi dolmadan tekrar gönderilmez. |
+| SL değişiklikleri (başa baş, basket SL, trailing) her tick'te tekrar tekrar gönderilebiliyordu. Bağlantı yavaşken istek kuyruğu birikiyordu. | Aynı pozisyona en fazla `ModifyMinIntervalMs` (1 sn) aralıkla SL değişikliği gönderilir. |
+| Bağlantı yavaşken de yeni emir konuyordu. | Ping `MaxPingMs` (150 ms) üstündeyse yeni emir konmaz. Bu kontrol sadece canlı ve demo hesapta çalışır. |
+| Gecikme ölçülmüyordu. | Ekranda ping ile ortalama ve en yüksek istek süresi gösterilir. `ASLAN EXEC SUMMARY` satırına da yazılır. |
+
+Değişmeyen: SL, TP ve giriş emirleri zaten sunucuda bekler, gecikmeden etkilenmez.
+
+Test için: `ASLAN_I_v275_gecikme_korumali.set`. Strategy Tester'da **Random delay** ile çalıştırın.
+
 ### v2.74: katmanlı koruma ve kayma koruması
 
 Üç koruma katmanı aynı anda çalışır. Biri yetişemediğinde diğeri devreye girer:
@@ -94,7 +109,7 @@ Kayma koruması:
 
 Ayrıca orijinal koddaki `CommonStopForBasketNetLock` fonksiyonundaki ters ikili arama düzeltildi. Eski hali her zaman mevcut fiyata yapışık bir stop döndürüyordu.
 
-Test için: `ASLAN_H_v274_katmanli_koruma.set`
+v2.74 seti v2.75 ile değiştirildi.
 
 ### v2.73: işlem saatleri ve kâr koruma
 
