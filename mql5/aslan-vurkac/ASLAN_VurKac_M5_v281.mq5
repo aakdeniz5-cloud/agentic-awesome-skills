@@ -1996,6 +1996,33 @@ void ManageCommonBasketTrail()
    }
 }
 
+//--- v2.81 düzeltme: hesabın BUGÜNKÜ gerçek sonucu (tüm EA'lar ve elle işlemler,
+//    açılış+kapanış komisyonu dahil; para yatırma/çekme hariç) + açık pozisyonlar.
+double TodayAccountNet()
+{
+   MqlDateTime d;
+   TimeToStruct(TimeCurrent(),d);
+   d.hour=0; d.min=0; d.sec=0;
+   datetime from=StructToTime(d);
+   double x=0.0;
+   if(HistorySelect(from,TimeCurrent()+60))
+   {
+      int n=HistoryDealsTotal();
+      for(int i=0;i<n;i++)
+      {
+         ulong t=HistoryDealGetTicket(i);
+         if(!t) continue;
+         ENUM_DEAL_TYPE dt=(ENUM_DEAL_TYPE)HistoryDealGetInteger(t,DEAL_TYPE);
+         if(dt!=DEAL_TYPE_BUY && dt!=DEAL_TYPE_SELL) continue;   // bakiye/kredi işlemleri hariç
+         x+=HistoryDealGetDouble(t,DEAL_PROFIT)+HistoryDealGetDouble(t,DEAL_SWAP)
+           +HistoryDealGetDouble(t,DEAL_COMMISSION)+HistoryDealGetDouble(t,DEAL_FEE);
+      }
+   }
+   // açık pozisyonların (tüm hesap) yüzen sonucu
+   x+=AccountInfoDouble(ACCOUNT_EQUITY)-AccountInfoDouble(ACCOUNT_BALANCE);
+   return x;
+}
+
 bool RiskAndDaily()
 {
    int today=DayKey();
@@ -2032,9 +2059,10 @@ bool RiskAndDaily()
       Print("ASLAN DAILY TARGET | ",DoubleToString(day,2));
       EndCycle(); dailyLocked=true; return false;
    }
-   if(UseDailyNetLossLimit && day<=-MathAbs(DailyNetLossLimit))
+   double acctDay=TodayAccountNet();
+   if(UseDailyNetLossLimit && (day<=-MathAbs(DailyNetLossLimit) || acctDay<=-MathAbs(DailyNetLossLimit)))
    {
-      Print("ASLAN DAILY LOSS LIMIT | ",DoubleToString(day,2));
+      Print("ASLAN DAILY LOSS LIMIT | EA=",DoubleToString(day,2)," | hesap=",DoubleToString(acctDay,2));
       EndCycle(); dailyLocked=true; return false;
    }
    return true;
@@ -2149,7 +2177,7 @@ void UpdateMemo()
            " | max: ",DoubleToString(g_slipMax,1)," point (",IntegerToString(g_slipCount)," fill)",
            " | StopLimit: ",(StopLimitAvailable()?"ON":"OFF")," missed=",IntegerToString(g_missedFills),"\n",
            "Live block: ",(g_blocked?g_blockReason:"yok"),
-           " | Gun zirve: ",DoubleToString(g_dayPeak,2),
+           " | Gun zirve: ",DoubleToString(g_dayPeak,2)," | Hesap bugun: ",DoubleToString(TodayAccountNet(),2),
            StringFormat("\nPing: %.0f ms | Istek suresi ort/max: %.0f/%.0f ms",PingMs(),
                         (g_latN>0?g_latSum/g_latN:0.0),g_latMax),
            " | Koruma: SL+BE",(LegBreakEvenPoints>0?"":"(kapali)"),"+Basket",(UseBasketStopSync?"+SLsync":""));
