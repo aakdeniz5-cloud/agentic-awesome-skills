@@ -1,4 +1,4 @@
-# ASLAN Vur-Kaç M5 v2.73 LIVE
+# ASLAN Vur-Kaç M5 v2.74 LIVE
 
 Kullanıcının v2.63 grid EA'sının canlı hesap için sağlamlaştırılmış sürümü. Değişiklikler, EC Markets'in demo ve canlı hesap farkları hakkındaki notlarına ve XAUUSD.n sembol özelliklerine dayanıyor.
 
@@ -76,6 +76,26 @@ Bedeli: hızlı ve tek yönlü hareketlerde işlem açılmaz. Bu stratejinin kaz
 
 Bu testlerde stop emirleri istenen fiyattan ortalama yaklaşık 10 point kötü doldu. v2.71'de tek bir Stop Limit reddi, EA'yı test boyunca kalıcı olarak normal Stop'a döndürüyordu. **v2.72'de ret yalnızca o emri etkiler.** Ret sebebi (retcode, fiyatlar) Journal'a yazılır ve `ASLAN EXEC SUMMARY` satırında kabul edilen ve reddedilen Stop Limit sayıları görünür.
 
+### v2.74: katmanlı koruma ve kayma koruması
+
+Üç koruma katmanı aynı anda çalışır. Biri yetişemediğinde diğeri devreye girer:
+
+| Katman | Nerede çalışır | Ne yapar |
+|---|---|---|
+| 1. SL | Sunucu | Her pozisyonun açılışta konan SL'si. EA donsa veya bağlantı kopsa da çalışır. |
+| 2. Başa baş | EA → sunucu SL'si | Pozisyon 40 point kâra geçince SL, komisyon dahil başa başa çekilir. |
+| 3. Basket trail | EA + sunucu yedeği | Toplam kâr zirvesinin bir kısmı korunur. EA sepeti kapatır. Ayrıca sepet tek yönlüyse korunan seviye **her pozisyonun SL'sine de yazılır**. Böylece EA'nın kapatması gecikir veya kayarsa sunucu SL'si devreye girer. |
+| TP | Sunucu (limit) | Pozisyon başı 120 point TP. Limit emri olduğu için kâr çıkışında kayma olmaz. |
+
+Kayma koruması:
+- **Girişte Stop Limit:** Emir stop fiyatından ya da daha iyisinden dolar.
+- **Kayma sigortası:** Son 20 girişin ortalama kayması 5 point'i aşarsa yeni emirler 30 dk durdurulur.
+- **Önemli:** SL bir stop emridir ve hızlı piyasada kayabilir. Bunu tamamen önlemenin bir yolu yoktur. Etkisini azaltmanın tek yolu küçük lot kullanmak ve kârı TP ile (limit) almaktır.
+
+Ayrıca orijinal koddaki `CommonStopForBasketNetLock` fonksiyonundaki ters ikili arama düzeltildi. Eski hali her zaman mevcut fiyata yapışık bir stop döndürüyordu.
+
+Test için: `ASLAN_H_v274_katmanli_koruma.set`
+
 ### v2.73: işlem saatleri ve kâr koruma
 
 Test A raporunun (v2.71) saat ve gün analizi:
@@ -94,13 +114,7 @@ Test A raporunun (v2.71) saat ve gün analizi:
 
 **Dikkat:** v2.71 Londra ve NY saatlerinde neredeyse hiç işlem yapmadığı için bu saatlerdeki performansı **bilinmiyor**. Saat filtresi geceden gelen zararı keser, ama gündüz sonucunu ancak test gösterir.
 
-### v2.73 testleri
-
-| Set | Ne gösterir |
-|---|---|
-| `ASLAN_E_v273_varsayilan.set` | Saat filtresi (10–19) + günlük kâr kilidi + basket %50 |
-| `ASLAN_F_v273_TP_BE_acik.set` | E + pozisyon başı TP 120 point + başa baş 40 point |
-| `ASLAN_G_v273_saat_filtresi_kapali.set` | E, saat filtresi kapalı (gece dahil) |
+v2.73 testleri (E, F, G) kullanıcının bildirdiğine göre ayrı ayrı zararla sonuçlandı.
 
 ### Karşılaştırma testleri
 Hepsi aynı dönem (2026.05.01–2026.10.06), 10.000 $, gerçek tick verisi ve Random delay ile yapılmalı:
