@@ -42,6 +42,23 @@ Sağlamlık kontrolleri:
 
 Araştırma script'leri `research/` klasöründe. Mum verisi kullanıcıya ait olduğu için depoya eklenmedi.
 
+## MT5 gerçek tick doğrulaması (kullanıcı testi)
+EC Markets XAUUSD.n, M5, 2026.02.01–2026.10.06, 10.000 $, %100 gerçek tick:
+
+| | Simülasyon (doğrulama dönemi) | MT5 gerçek tick |
+|---|---|---|
+| İşlem | 106 | 101 |
+| Kazanma oranı | %42,5 | %41,6 |
+| Ortalama R (fiyat) | +0,23 (maliyet sonrası) | +0,20 (brüt) |
+| Profit factor | 1,31 | 1,26 |
+| Net | — | **+686 $ (+%6,9)** |
+| En büyük düşüş | — | %5,2 |
+
+- **Aylık sonuç:** Şubat −92 $, Mart −131 $, Nisan −1 $, Mayıs +156 $, Haziran +198 $, Temmuz +252 $, Ağustos +116 $, Eylül +239 $, Ekim (6 gün) −51 $.
+- **Stop emri kayması:** Ortalama 31 point, medyan 11 point. Simülasyonda 5 point varsayılmıştı, ama SL ~1.200 point olduğu için bu fark riskin yaklaşık %2,5'i kadar.
+- **Yön farkı:** Kazanma oranı satışta %51, alışta %31. Araştırmadaki yön farkıyla tutarlı.
+- **Risk:** Lot adımı aşağı yuvarlandığı için gerçekleşen risk %0,5'in biraz altında kalıyor.
+
 ## Kurulum ve doğrulama
 1. `LondonBreakoutEA.mq5` dosyasını `MQL5\Experts` klasörüne kopyalayın ve F7 ile derleyin.
 2. `sets/LondonBreakout_varsayilan.set` dosyasını `MQL5\Profiles\Tester` klasörüne kopyalayın.
