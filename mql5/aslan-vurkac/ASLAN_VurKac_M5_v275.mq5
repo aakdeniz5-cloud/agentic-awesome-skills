@@ -108,6 +108,8 @@ input double GridSpreadMultiplier     = 2.0;    // Grid aralığı >= (ortalama 
 input double SLSpreadMultiplier       = 3.0;    // SL >= (ortalama spread + komisyon maliyeti) x bu (0 = kapalı)
 input int    SpreadAverageTicks       = 300;    // Ortalama spread için tick sayısı (EMA)
 input double SpreadSpikeMultiplier    = 2.0;    // Spread > ortalama x bu ise sıçrama say (0 = kapalı)
+input double SpreadSpikeMinPoints     = 10.0;   // Sıçrama sayılması için spread ortalamayı en az bu kadar aşmalı (point)
+input int    SpreadWarmupTicks        = 100;    // EA başladıktan sonra ortalama oturana kadar sıçrama kontrolü yok (tick)
 input bool   DeletePendingWhenBlocked = true;   // Engel durumunda (spread/rollover/haber/marj) bekleyen emirleri sil
 input bool   UseRolloverFilter        = true;   // Sunucu gece yarısı (rollover) çevresinde emir yok
 input int    RolloverMinutesBefore    = 15;     // Gece yarısından kaç dk önce
@@ -219,6 +221,7 @@ double   g_commVal[];
 double   g_slipSum      = 0.0;
 double   g_slipMax      = 0.0;
 int      g_slipCount    = 0;
+int      g_spreadTicks  = 0;   // ortalama spread'e katılan tick sayısı
 int      g_missedFills  = 0;   // v2.71: süresinde dolmadığı için iptal edilen stop limit
 double   g_dayPeak      = 0.0;  // v2.73: gün içi net zirve
 double   g_slipRing[];          // v2.74: son girişlerin kayması
@@ -436,6 +439,7 @@ void UpdateLiveStats()
    double sp=t.ask-t.bid;
    if(sp>0.0)
    {
+      g_spreadTicks++;
       if(g_avgSpread<=0.0) g_avgSpread=sp;
       else
       {
@@ -571,7 +575,8 @@ void EvaluateLiveBlock()
 
    if(haveTick && sp/PT()>MaximumSpreadPoints)
       why=StringFormat("spread %.0f > max %.0f point",sp/PT(),MaximumSpreadPoints);
-   else if(haveTick && SpreadSpikeMultiplier>0.0 && g_avgSpread>0.0 && sp>g_avgSpread*SpreadSpikeMultiplier)
+   else if(haveTick && SpreadSpikeMultiplier>0.0 && g_avgSpread>0.0 && g_spreadTicks>=SpreadWarmupTicks &&
+           sp>g_avgSpread*SpreadSpikeMultiplier && (sp-g_avgSpread)/PT()>=SpreadSpikeMinPoints)
       why=StringFormat("spread sicramasi %.0f (ort %.0f) point",sp/PT(),g_avgSpread/PT());
 
    datetime now=TimeCurrent();
